@@ -4,7 +4,6 @@
 
 DID_METHODS["did:key:"] = {
   name: "did:key（Ed25519）",
-  hint: "公鑰直接編在 DID 字串裡，不需任何註冊中心，離線可驗。",
 
   async generate() {
     const { privateKey, pub } = await generateEd25519();

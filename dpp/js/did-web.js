@@ -63,7 +63,6 @@ function ed25519FromMethod(m) {
 
 DID_METHODS["did:web:"] = {
   name: "did:web（網域）",
-  hint: "DID 綁定一個網域：DID 文件（did.json）放在該網域的 HTTPS 網站上，誰能改網站，誰就能管這個 DID。",
   holder: "did:key:", // the holder is usually another party without a website, so it gets a did:key
 
   async generate({ domain } = {}) {

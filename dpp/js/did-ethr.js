@@ -65,7 +65,6 @@ function methodAddress(m) {
 
 DID_METHODS["did:ethr:"] = {
   name: "did:ethr（Sepolia）",
-  hint: "did:ethr:sepolia:<以太坊地址>。任何地址天生就是 did:ethr；要改 DID 文件（授權、撤銷金鑰）才寫入鏈上合約。",
 
   async generate() {
     const e = requireEthers();

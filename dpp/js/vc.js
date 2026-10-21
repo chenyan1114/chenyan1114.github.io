@@ -2,7 +2,7 @@
    VC assembly and structural checks. did-key.js / did-ethr.js register into DID_METHODS / SUITES. */
 "use strict";
 
-const DID_METHODS = {}; // DID prefix → { name, hint, generate(), parse(did), describe(info), resolve(did, opts) }
+const DID_METHODS = {}; // DID prefix → { name, generate(opts), parse(did), describe(info), resolve(did, opts) }
 const SUITES = {};      // cryptosuite name → { sigLen, fragment(did), note, sign(keys, hashData), verify(r, ctx) }
 
 /* ---------- Encoding ---------- */

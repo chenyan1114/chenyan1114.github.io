@@ -26,8 +26,15 @@
   .warn { color: #b45309; }
   .info { color: #6b7280; }
   .summary { font-weight: 700; }
-  .methods label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin: 0 16px 0 0; }
-  .methods input { width: auto; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+  .tabs label { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 8px 16px; border: 1px solid #8886; border-bottom: none; border-radius: 10px 10px 0 0; cursor: pointer; }
+  .tabs input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .tabs label:has(input:checked) { background: #2563eb; color: white; border-color: #2563eb; }
+  .tabs label:has(input:focus-visible) { outline: 2px solid #2563eb; outline-offset: 2px; }
+  @media (max-width: 640px) { .tabs { gap: 4px; } .tabs label { padding: 6px 10px; font-size: 0.9rem; } }
+  .panel { border: 1px solid #8886; border-radius: 0 10px 10px 10px; padding: 4px 16px 8px; }
+  .panel h4 { margin: 16px 0 4px; }
+  .current { margin-top: 12px; }
   details { margin: 8px 0; }
   summary { cursor: pointer; }
   .banner { border: 2px solid #2563eb; border-radius: 12px; padding: 10px 14px; font-weight: 600; }
@@ -72,60 +79,76 @@
   </div>
 
   <div class="card">
-    <h2>2. DID</h2>
-    <p class="methods">
-      <label><input type="radio" name="didMethod" value="did:key:" checked /> did:key（Ed25519）</label>
-      <label><input type="radio" name="didMethod" value="did:ethr:" /> did:ethr（Sepolia）</label>
-      <label><input type="radio" name="didMethod" value="did:web:" /> did:web（網域）</label>
-    </p>
-    <p class="hint" id="methodHint"></p>
-    <div id="webOpts" hidden>
-      <label for="inWebDomain">did:web 網域（可含路徑）</label>
-      <input id="inWebDomain" value="chenyan1114.github.io" />
-      <p class="hint">已經發布過 did.json 的話，請用「匯入私鑰」載入當初匯出的私鑰檔，而不是重新生成（新金鑰跟網站上的對不上）。</p>
+    <h2>2. DID：誰發證、誰持有</h2>
+    <p class="hint">選一種 DID 產生發證單位（issuer）和持有者（holder）。三種的差別在於「驗證時，公鑰從哪裡來」。</p>
+
+    <div class="tabs" role="radiogroup" aria-label="DID 種類">
+      <label><input type="radio" name="didMethod" value="did:key:" checked /> did:key</label>
+      <label><input type="radio" name="didMethod" value="did:web:" /> did:web</label>
+      <label><input type="radio" name="didMethod" value="did:ethr:" /> did:ethr</label>
+    </div>
+
+    <div class="panel" data-method="did:key:">
+      <p><button class="primary" data-gen="did:key:">🎲 生成 issuer + holder</button></p>
+    </div>
+
+    <div class="panel" data-method="did:web:" hidden>
+      <h4>A. 用已發布的 DID</h4>
       <p>
-        <button id="btnWebImport">📂 匯入私鑰</button>
+        <button class="primary" id="btnWebImport">📂 匯入發證私鑰</button>
         <input type="file" id="webKeyInput" accept=".json,application/json" hidden />
       </p>
+      <h4>B. 建立新的 did:web</h4>
+      <label for="inWebDomain">網域</label>
+      <input id="inWebDomain" placeholder="例如 example.com 或 example.com/issuers/acme" />
+      <p><button data-gen="did:web:">🎲 產生新金鑰與 did.json</button></p>
+      <p id="webDocBox" hidden>
+        <button id="btnWebDoc">⬇ 下載 did.json</button>
+        <button id="btnWebKey">⬇ 匯出私鑰</button>
+        <span class="hint" id="webDocHint"></span>
+      </p>
     </div>
-    <p>
-      <button id="btnGen" class="primary">🎲 生成 issuer + holder</button>
-      <button id="btnClearKeys">清除</button>
-    </p>
-    <label>issuer</label>
-    <code class="did" id="issuerDid">尚未生成</code>
-    <label>holder（credentialSubject.id）</label>
-    <code class="did" id="holderDid">尚未生成</code>
-    <p class="hint" id="keyMethod">私鑰只存在頁面記憶體，重新整理就消失。</p>
-    <p id="webDocBox" hidden>
-      <button id="btnWebDoc">⬇ 下載 did.json</button>
-      <button id="btnWebKey">⬇ 匯出私鑰</button>
-      <span class="hint" id="webDocHint"></span>
-    </p>
 
-    <h3>MetaMask 授權（did:ethr）</h3>
-    <p class="hint">你的 MetaMask 帳戶當 issuer，授權頁面金鑰代簽（<code>addDelegate</code>）。撤銷或過期後，它簽的 VC 就驗不過。需少量 Sepolia 測試幣。</p>
-    <p><button id="btnWallet">🦊 連接 MetaMask</button></p>
-    <label for="inValidity">授權有效期</label>
-    <select id="inValidity">
-      <option value="600">10 分鐘（示範過期）</option>
-      <option value="86400" selected>1 天</option>
-      <option value="2592000">30 天</option>
-    </select>
-    <p>
-      <button id="btnDelegate" class="primary">🔗 授權</button>
-      <button id="btnRevoke">⛔ 撤銷</button>
-    </p>
-    <p class="hint" id="walletStatus">尚未連接。</p>
+    <div class="panel" data-method="did:ethr:" hidden>
+      <h4>A. 快速試用（不上鏈）</h4>
+      <p><button class="primary" data-gen="did:ethr:">🎲 生成 issuer + holder</button></p>
+      <h4>B. 用 MetaMask 當發證單位，授權／撤銷簽名金鑰</h4>
+      <p class="hint">MetaMask 帳戶當 issuer，授權頁面金鑰代簽（<code>addDelegate</code>）。撤銷或過期後，它簽的 VC 就驗不過。需少量 Sepolia 測試幣。</p>
+      <p><button id="btnWallet">🦊 連接 MetaMask</button></p>
+      <label for="inValidity">授權有效期</label>
+      <select id="inValidity">
+        <option value="600">10 分鐘（示範過期）</option>
+        <option value="86400" selected>1 天</option>
+        <option value="2592000">30 天</option>
+      </select>
+      <p>
+        <button id="btnDelegate">🔗 授權</button>
+        <button id="btnRevoke">⛔ 撤銷</button>
+      </p>
+      <p class="hint" id="walletStatus">尚未連接。</p>
+      <details class="hint">
+        <summary>進階：Sepolia RPC</summary>
+        <label for="inRpc">讀取區塊鏈用的 RPC（需能讀舊區塊的事件）</label>
+        <input id="inRpc" value="https://sepolia.gateway.tenderly.co" />
+      </details>
+    </div>
 
-    <h3>解析 DID 文件</h3>
-    <p class="hint">查看一個 DID 授權了哪些金鑰。did:ethr 由 Sepolia 鏈上事件組出；did:web 從該網域的網站下載。</p>
-    <label for="inResolveDid">DID</label>
-    <input id="inResolveDid" placeholder="did:key:z…、did:ethr:sepolia:0x… 或 did:web:example.com" />
-    <label for="inRpc">Sepolia RPC</label>
-    <input id="inRpc" value="https://sepolia.gateway.tenderly.co" />
-    <p><button id="btnResolve">📖 解析</button></p>
-    <pre id="didDocOut" hidden></pre>
+    <div class="current">
+      <label>issuer（發證單位）</label>
+      <code class="did" id="issuerDid">尚未生成</code>
+      <label>holder（持有者，放進 credentialSubject.id）</label>
+      <code class="did" id="holderDid">尚未生成</code>
+      <p class="hint" id="keyMethod">私鑰只存在頁面記憶體，重新整理就消失。</p>
+      <p><button id="btnClearKeys">清除</button></p>
+    </div>
+
+    <details>
+      <summary>🔍 解析 DID 文件：查看任何 DID 授權了哪些金鑰</summary>
+      <label for="inResolveDid">DID</label>
+      <input id="inResolveDid" placeholder="did:key:z…、did:web:example.com 或 did:ethr:sepolia:0x…" />
+      <p><button id="btnResolve">📖 解析</button></p>
+      <pre id="didDocOut" hidden></pre>
+    </details>
   </div>
 
   <div class="card" id="vcCard">

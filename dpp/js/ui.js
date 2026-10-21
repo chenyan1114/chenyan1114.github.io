@@ -5,12 +5,13 @@ const $ = (id) => document.getElementById(id);
 let issuerKeys = null, holderKeys = null; // private keys live in memory only and vanish on reload
 let wallet = null; // connected MetaMask: { provider, signer, address, did }
 
-function on(id, handler) {
-  $(id).addEventListener("click", async () => {
-    $(id).disabled = true;
-    try { await handler(); } finally { $(id).disabled = false; }
+function onEl(el, handler) {
+  el.addEventListener("click", async () => {
+    el.disabled = true;
+    try { await handler(); } finally { el.disabled = false; }
   });
 }
+const on = (id, handler) => onEl($(id), handler);
 
 function showStatus(id, cls, text) {
   $(id).className = cls;
@@ -26,8 +27,6 @@ function onJsonFile(inputId, onLoad, onError) {
     try { onLoad(JSON.parse(await f.text()), f.name); } catch (e) { onError(e); }
   });
 }
-
-const selectedMethod = () => DID_METHODS[document.querySelector('input[name="didMethod"]:checked').value];
 
 function readForm() {
   const v = (id) => $(id).value.trim();
@@ -46,16 +45,16 @@ function renderKeys(status) {
   // did:web: offer the DID document for publishing at the URL the DID points to
   const doc = issuerKeys?.didDocument;
   $("webDocBox").hidden = !doc;
-  if (doc) $("webDocHint").textContent = `把它放到 ${DID_METHODS["did:web:"].parse(doc.id).url}，別人才能驗證這個 issuer；私鑰檔自己保存，不可上傳。`;
+  if (doc) $("webDocHint").textContent = `放到 ${DID_METHODS["did:web:"].parse(doc.id).url}；私鑰檔自己保存。`;
 }
 
 /* did:web: tell the user whether the website already serves this key, a different key, or nothing yet */
 async function renderWebStatus(prefix) {
   const status = await DID_METHODS["did:web:"].publishedStatus(issuerKeys);
   const notes = {
-    same: "網站上的 did.json 與這把私鑰相符，別人可以驗證。",
-    different: "⚠ 網站上已經有另一把金鑰的 did.json：用這把私鑰簽的 VC 會驗證失敗。請改用「匯入私鑰」，或重新上傳新的 did.json。",
-    unpublished: "did.json 還沒放上網站：目前只能在本頁模擬驗證。",
+    same: "與網站上的 did.json 相符。",
+    different: "⚠ 與網站上的 did.json 不符，簽的 VC 會驗證失敗。",
+    unpublished: "did.json 尚未上網站，只能在本頁模擬驗證。",
   };
   renderKeys(`${prefix} ${notes[status]}`);
 }
@@ -101,17 +100,19 @@ onJsonFile("fileInput",
   () => { $("fileStatus").textContent = "JSON 解析失敗。"; });
 
 /* ---------- 2. DID ---------- */
+/* One tab per DID method: show only the selected method's panel */
 function renderMethod() {
-  $("methodHint").textContent = selectedMethod().hint;
-  $("webOpts").hidden = selectedMethod() !== DID_METHODS["did:web:"];
+  const prefix = document.querySelector('input[name="didMethod"]:checked').value;
+  document.querySelectorAll(".panel").forEach((panel) => { panel.hidden = panel.dataset.method !== prefix; });
 }
 document.querySelectorAll('input[name="didMethod"]').forEach((el) => el.addEventListener("change", renderMethod));
 renderMethod();
 
-on("btnGen", async () => {
+// Each panel's generate button names its method in data-gen
+document.querySelectorAll("button[data-gen]").forEach((btn) => onEl(btn, async () => {
   $("keyMethod").textContent = "生成中…";
   try {
-    const m = selectedMethod();
+    const m = DID_METHODS[btn.dataset.gen];
     const holderMethod = m.holder ? DID_METHODS[m.holder] : m;
     issuerKeys = await m.generate({ domain: $("inWebDomain").value });
     holderKeys = await holderMethod.generate();
@@ -122,7 +123,7 @@ on("btnGen", async () => {
   } catch (e) {
     $("keyMethod").textContent = "生成失敗：" + e.message;
   }
-});
+}));
 
 on("btnResolve", async () => {
   const out = $("didDocOut");
