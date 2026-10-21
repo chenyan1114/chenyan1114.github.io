@@ -1,0 +1,21 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/did/v1",
+    "https://w3id.org/security/multikey/v1"
+  ],
+  "id": "did:web:chenyan1114.github.io",
+  "verificationMethod": [
+    {
+      "id": "did:web:chenyan1114.github.io#key-1",
+      "type": "Multikey",
+      "controller": "did:web:chenyan1114.github.io",
+      "publicKeyMultibase": "z6Mkph4g8Pa3WSVhZV7q8ouiYXr7GvjcAV6QWcJVva7yikqg"
+    }
+  ],
+  "authentication": [
+    "did:web:chenyan1114.github.io#key-1"
+  ],
+  "assertionMethod": [
+    "did:web:chenyan1114.github.io#key-1"
+  ]
+}
