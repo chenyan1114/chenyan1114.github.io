@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ISO 證書 → VC Demo (W3C v2.0)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 900px; margin: 0 auto; padding: 24px; line-height: 1.5; }
+  h1 { font-size: 1.5rem; }
+  .card { border: 1px solid #8884; border-radius: 12px; padding: 16px; margin: 16px 0; }
+  label { display: block; font-weight: 600; margin: 10px 0 4px; }
+  input, textarea, select { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #8886; font: inherit; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
+  button { padding: 10px 16px; border-radius: 10px; border: 1px solid #8886; cursor: pointer; font: inherit; font-weight: 600; margin: 6px 8px 6px 0; }
+  button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+  code.did { word-break: break-all; background: #8882; padding: 4px 8px; border-radius: 6px; display: block; margin-top: 4px; }
+  pre { background: #111; color: #e6edf3; padding: 16px; border-radius: 12px; overflow: auto; max-height: 480px; }
+  .hint { opacity: 0.8; font-size: 0.9rem; }
+  .badge { display: inline-block; background: #f59e0b; color: #111; font-weight: 700; font-size: 0.8rem; padding: 2px 10px; border-radius: 999px; margin-left: 8px; vertical-align: middle; }
+  .badge.signed { background: #16a34a; color: white; }
+  .ok { color: #16a34a; font-weight: 700; }
+  .pass { color: #16a34a; }
+  .err { color: #dc2626; }
+  .warn { color: #b45309; }
+  .info { color: #6b7280; }
+  .summary { font-weight: 700; }
+  .methods label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; margin: 0 16px 0 0; }
+  .methods input { width: auto; }
+  details { margin: 8px 0; }
+  summary { cursor: pointer; }
+  .banner { border: 2px solid #2563eb; border-radius: 12px; padding: 10px 14px; font-weight: 600; }
+  #qrBox { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0; }
+  #qrImg svg { width: 260px; height: 260px; display: block; border-radius: 8px; }
+  #qrInfo { flex: 1; min-width: 220px; }
+</style>
+</head>
+<body>
+  <h1>ISO 證書 → Verifiable Credential <span class="badge" id="signBadge">UNSIGNED</span></h1>
+  <p class="hint">把一張 ISO 證書做成 W3C VC v2.0：① 填證書 → ② 生成 DID → ③ 生成 VC、簽名、驗證。</p>
+
+  <div class="card">
+    <h2>1. ISO 證書</h2>
+    <div class="row">
+      <div>
+        <label for="inStandard">certificationStandard</label>
+        <input id="inStandard" value="ISO 9001:2015" />
+      </div>
+      <div>
+        <label for="inNumber">certificateNumber</label>
+        <input id="inNumber" value="TW-2026-QA-0891" />
+      </div>
+    </div>
+    <label for="inScope">scope</label>
+    <input id="inScope" value="Design and manufacture of electronic components" />
+    <div class="row">
+      <div>
+        <label for="inHolderName">holderName</label>
+        <input id="inHolderName" value="Acme Electronics Co., Ltd." />
+      </div>
+      <div>
+        <label for="inValidUntil">validUntil (YYYY-MM-DD)</label>
+        <input id="inValidUntil" value="2029-09-16" />
+      </div>
+    </div>
+    <p>
+      <button id="btnFile">📂 從 JSON 檔匯入</button>
+      <input type="file" id="fileInput" accept=".json,application/json" hidden />
+    </p>
+    <p class="hint" id="fileStatus">預設值同 <code>examples/sample-iso-cert.json</code>。</p>
+  </div>
+
+  <div class="card">
+    <h2>2. DID</h2>
+    <p class="methods">
+      <label><input type="radio" name="didMethod" value="did:key:" checked /> did:key（Ed25519）</label>
+      <label><input type="radio" name="didMethod" value="did:ethr:" /> did:ethr（Sepolia）</label>
+      <label><input type="radio" name="didMethod" value="did:web:" /> did:web（網域）</label>
+    </p>
+    <p class="hint" id="methodHint"></p>
+    <div id="webOpts" hidden>
+      <label for="inWebDomain">did:web 網域（可含路徑）</label>
+      <input id="inWebDomain" value="chenyan1114.github.io" />
+      <p class="hint">已經發布過 did.json 的話，請用「匯入私鑰」載入當初匯出的私鑰檔，而不是重新生成（新金鑰跟網站上的對不上）。</p>
+      <p>
+        <button id="btnWebImport">📂 匯入私鑰</button>
+        <input type="file" id="webKeyInput" accept=".json,application/json" hidden />
+      </p>
+    </div>
+    <p>
+      <button id="btnGen" class="primary">🎲 生成 issuer + holder</button>
+      <button id="btnClearKeys">清除</button>
+    </p>
+    <label>issuer</label>
+    <code class="did" id="issuerDid">尚未生成</code>
+    <label>holder（credentialSubject.id）</label>
+    <code class="did" id="holderDid">尚未生成</code>
+    <p class="hint" id="keyMethod">私鑰只存在頁面記憶體，重新整理就消失。</p>
+    <p id="webDocBox" hidden>
+      <button id="btnWebDoc">⬇ 下載 did.json</button>
+      <button id="btnWebKey">⬇ 匯出私鑰</button>
+      <span class="hint" id="webDocHint"></span>
+    </p>
+
+    <h3>MetaMask 授權（did:ethr）</h3>
+    <p class="hint">你的 MetaMask 帳戶當 issuer，授權頁面金鑰代簽（<code>addDelegate</code>）。撤銷或過期後，它簽的 VC 就驗不過。需少量 Sepolia 測試幣。</p>
+    <p><button id="btnWallet">🦊 連接 MetaMask</button></p>
+    <label for="inValidity">授權有效期</label>
+    <select id="inValidity">
+      <option value="600">10 分鐘（示範過期）</option>
+      <option value="86400" selected>1 天</option>
+      <option value="2592000">30 天</option>
+    </select>
+    <p>
+      <button id="btnDelegate" class="primary">🔗 授權</button>
+      <button id="btnRevoke">⛔ 撤銷</button>
+    </p>
+    <p class="hint" id="walletStatus">尚未連接。</p>
+
+    <h3>解析 DID 文件</h3>
+    <p class="hint">查看一個 DID 授權了哪些金鑰。did:ethr 由 Sepolia 鏈上事件組出；did:web 從該網域的網站下載。</p>
+    <label for="inResolveDid">DID</label>
+    <input id="inResolveDid" placeholder="did:key:z…、did:ethr:sepolia:0x… 或 did:web:example.com" />
+    <label for="inRpc">Sepolia RPC</label>
+    <input id="inRpc" value="https://sepolia.gateway.tenderly.co" />
+    <p><button id="btnResolve">📖 解析</button></p>
+    <pre id="didDocOut" hidden></pre>
+  </div>
+
+  <div class="card" id="vcCard">
+    <h2>3. VC</h2>
+    <p class="banner" id="sharedBanner" hidden>📱 這是從產品護照 QR code 打開的證書，已自動驗證（結果在下方）。</p>
+    <p>
+      <button id="btnIssue" class="primary">✨ 生成 VC</button>
+      <button id="btnSign" class="primary">🔏 簽名</button>
+      <button id="btnVerify" class="primary">🔍 驗證</button>
+      <button id="btnUploadVc">📂 上傳 VC</button>
+      <button id="btnCopy">複製</button>
+      <button id="btnDownload">下載</button>
+      <button id="btnQr">📱 產品護照 QR code</button>
+    </p>
+    <div id="qrBox" hidden>
+      <div id="qrImg"></div>
+      <div id="qrInfo">
+        <p><strong>掃描即可驗證這張證書</strong></p>
+        <p class="hint">簽好的 VC 被壓縮後放進網址的 <code>#vc=…</code>，手機打開時會自動解開並驗證。<code>#</code> 後面的內容不會傳給網站伺服器。</p>
+        <p class="hint" id="qrHint"></p>
+        <p><button id="btnCopyLink">複製連結</button></p>
+      </div>
+    </div>
+    <p class="hint">改 VC 裡任何欄位的值再驗證就會失敗；只改排版或欄位順序不影響。</p>
+    <details class="hint">
+      <summary>技術細節</summary>
+      <ul>
+        <li>簽名：proof options 與 VC 各自 JCS 正規化 → SHA-256 → 串接 → 用簽名金鑰簽名 → <code>proofValue</code>，連同 proof options 成為 <code>proof</code>。</li>
+        <li>did:key → <code>eddsa-jcs-2022</code>（W3C 標準），驗證用 DID 內的公鑰。</li>
+        <li>did:web → 同樣用 <code>eddsa-jcs-2022</code>，驗證時從 <code>https://網域/.well-known/did.json</code> 下載 DID 文件取得公鑰；
+          尚未放上網站時，以本頁暫存的文件模擬並提醒。</li>
+        <li>did:ethr → <code>ecdsa-secp256k1-recovery-jcs-demo</code>（教學用，非標準）：從簽名回推地址，
+          再比對 DID 文件裡的 <code>#controller</code> 或 <code>#delegate-N</code>；連不上 RPC 時離線判定。</li>
+        <li>VC v2.0：<code>validFrom</code>／<code>validUntil</code> 取代 v1 的 <code>issuanceDate</code>／<code>expirationDate</code>，皆為選填的 ISO 8601 日期時間。</li>
+        <li>驗證結果：✗ 違反 v2.0 規範或簽名不符；⚠ 只是本 demo 的預期（如 <code>urn:uuid</code>、ISO claims、與表單不同）。</li>
+      </ul>
+    </details>
+    <pre id="vcOut">按「生成 VC」開始，或上傳一份 VC 來驗證。</pre>
+    <p id="vcCheck"></p>
+    <div id="vcVerify"></div>
+    <input type="file" id="vcFileInput" accept=".json,application/json" hidden />
+  </div>
+
+<!-- ethers.js v6: secp256k1 / keccak256 / registry calls for did:ethr. If it fails to load (offline), did:key still works. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.17.0/ethers.umd.min.js"
+        integrity="sha512-AtjhVooOwBRjcpe7YjaQI6VDIBYNqpPGbuhQi0RtmoWQDD9mf9tu4p2jGXLiSw0nhE1JBvOjAbQL43yrva6C2g=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<!-- qrcode-generator: draws the product-passport QR code. If it fails to load, only the QR code is unavailable. -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"
+        integrity="sha384-e9EFD6BGC90bkW9aDV5xbbBfzwN7G8YImHao2lfLVKV/hPB0E0go+H3I64h7oHtA"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<!-- GitHub Pages lets browsers cache files for 10 minutes; old JS mixed with new HTML after a deploy breaks the page, so always fetch fresh JS -->
+<script>
+  for (const f of ["vc.js", "did-key.js", "did-web.js", "did-ethr.js", "ui.js"]) {
+    const s = document.createElement("script");
+    s.src = `./js/${f}?t=${Date.now()}`;
+    s.async = false; // injected scripts are async by default; false keeps execution order
+    document.body.append(s);
+  }
+</script>
+</body>
+</html>
