@@ -95,34 +95,51 @@ function didMethodOf(did) {
 // "did:x:y#key-1", "#key-1" (relative refs are allowed in DID documents) → "key-1"
 const fragmentOf = (id) => String(id).slice(String(id).indexOf("#") + 1);
 
+// Proof purposes used here, each matching a verification relationship in the signer's DID document
+const PURPOSES = { assertionMethod: "簽發憑證", authentication: "證明身分（出示 VP）" };
+
+/* The key the proof uses must be listed under the relationship named by the proof purpose */
+function checkRelationship(r, doc, fragment, purpose = "assertionMethod") {
+  return r.check((doc[purpose] ?? []).some((a) => fragmentOf(a.id ?? a) === fragment),
+    `#${fragment} 列在 ${purpose}（可用來${PURPOSES[purpose]}）`, `#${fragment} 未列在 ${purpose}，不可用來${PURPOSES[purpose]}`);
+}
+
 /* ---------- Data Integrity flow shared by every cryptosuite ---------- */
 // hashData = SHA256(JCS(proof options)) ‖ SHA256(JCS(unsigned document)), proof options first
 async function diHashData(proofOptions, doc) {
   return concatBytes(await sha256(jcs(proofOptions)), await sha256(jcs(doc)));
 }
 
-async function createProof(unsignedVc, keys, created = new Date().toISOString()) {
+/* Signs a VC (assertionMethod) or a VP (authentication). A VP answering a verifier's request also binds
+   its challenge and domain; they sit in the proof options, so they are covered by the signature. */
+async function createProof(unsignedDoc, keys, created = new Date().toISOString(), { proofPurpose = "assertionMethod", challenge, domain } = {}) {
   const suite = SUITES[keys.cryptosuite];
-  if (!suite) throw new Error("缺少 issuer 私鑰材料，請重新生成 DID");
+  if (!suite) throw new Error("缺少私鑰材料，請重新生成 DID");
   if (!isDateTime(created)) throw new Error("created 非法時間");
-  if (unsignedVc.proof !== undefined) throw new Error("文件已含 proof，請重新生成未簽名的 VC 再簽");
+  if (unsignedDoc.proof !== undefined) throw new Error("文件已含 proof，請重新生成未簽名的版本再簽");
   // 1. Build the proof options first (there is no proofValue yet)
   const proofOptions = {
     type: "DataIntegrityProof",
     cryptosuite: keys.cryptosuite,
     created,
     verificationMethod: keys.verificationMethod ?? keys.did + "#" + suite.fragment(keys.did), // delegate keys bring their own #delegate-N
-    proofPurpose: "assertionMethod",
-    "@context": unsignedVc["@context"],
+    proofPurpose,
+    ...(challenge !== undefined && { challenge }),
+    ...(domain !== undefined && { domain }),
+    "@context": unsignedDoc["@context"],
   };
   // 2. Hash proof options + document → 3. sign → 4. attach the proofValue
-  const sig = await suite.sign(keys, await diHashData(proofOptions, unsignedVc));
+  const sig = await suite.sign(keys, await diHashData(proofOptions, unsignedDoc));
   return { ...proofOptions, proofValue: "z" + base58btcEncode(sig) };
 }
 
+/* ctx.purpose / ctx.controller: what the proof must be for and whose DID must sign it.
+   Defaults fit a VC (assertionMethod by vc.issuer); a VP passes authentication and vp.holder. */
 async function verifyProof(signedVc, ctx = {}) {
   const r = report();
   const proof = signedVc.proof;
+  const purpose = ctx.purpose ?? "assertionMethod";
+  const [controller, role] = ctx.controller ? [ctx.controller, "VP holder"] : [signedVc.issuer, "VC issuer"];
   if (!isPlainObject(proof)) {
     r.fails.push("缺少 proof 物件（本 demo 只支援單一 proof）");
     return r;
@@ -131,8 +148,9 @@ async function verifyProof(signedVc, ctx = {}) {
   r.check(proof.type === "DataIntegrityProof", "proof.type 正確", 'proof.type 需為 "DataIntegrityProof"');
   if (!r.check(!!suite, `cryptosuite 為 ${proof.cryptosuite}${suite?.note ?? ""}`,
     `不支援的 cryptosuite：${proof.cryptosuite}（支援 ${Object.keys(SUITES).join("、")}）`)) return r;
-  r.soft(proof.proofPurpose === "assertionMethod", "proofPurpose 為 assertionMethod",
-    "proofPurpose 不是 assertionMethod（本 demo 預期 assertionMethod）");
+  // A VP must be an authentication proof; for VCs the purpose stays a warning, as before
+  (ctx.purpose ? r.check : r.soft)(proof.proofPurpose === purpose, `proofPurpose 為 ${purpose}`,
+    `proofPurpose 應為 ${purpose}（實際 ${proof.proofPurpose}）`);
   r.check(isDateTime(proof.created), "proof.created 為合法時間", "proof.created 非法時間");
 
   let sig = null;
@@ -156,7 +174,7 @@ async function verifyProof(signedVc, ctx = {}) {
       didInfo = didMethodOf(did).parse(did);
       r.passes.push("verificationMethod 的 DID 解析成功");
     } catch (e) { r.fails.push("verificationMethod DID 非法：" + e.message); }
-    r.check(did === signedVc.issuer, "verificationMethod 對應 VC issuer", "verificationMethod 的 DID 與 VC issuer 不一致");
+    r.check(did === controller, `verificationMethod 對應 ${role}`, `verificationMethod 的 DID 與 ${role} 不一致`);
   }
   if (r.fails.length) return r;
 
@@ -169,7 +187,7 @@ async function verifyProof(signedVc, ctx = {}) {
       "文件 @context 與 proof 內 @context 副本前綴不一致")) return r;
     unsecured["@context"] = proofOptions["@context"];
   }
-  await suite.verify(r, { hashData: await diHashData(proofOptions, unsecured), sig, did, didInfo, fragment, ...ctx });
+  await suite.verify(r, { hashData: await diHashData(proofOptions, unsecured), sig, did, didInfo, fragment, ...ctx, purpose });
   return r;
 }
 
@@ -222,8 +240,9 @@ SUITES["eddsa-jcs-2022"] = {
       r.fails.push("公鑰無法匯入或驗證出錯：" + e.message);
       return;
     }
-    r.check(ok, "Ed25519 簽名驗證通過（未竄改 ✓ 確為 issuer 私鑰所簽 ✓）",
-      "簽名驗證失敗：文件曾被竄改，或非 issuer 私鑰所簽");
+    const who = ctx.purpose === "authentication" ? "holder" : "issuer";
+    r.check(ok, `Ed25519 簽名驗證通過（未竄改 ✓ 確為 ${who} 私鑰所簽 ✓）`,
+      `簽名驗證失敗：文件曾被竄改，或非 ${who} 私鑰所簽`);
   },
 };
 

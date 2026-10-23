@@ -35,17 +35,28 @@
   .panel { border: 1px solid #8886; border-radius: 0 10px 10px 10px; padding: 4px 16px 8px; }
   .panel h4 { margin: 16px 0 4px; }
   .current { margin-top: 12px; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+  .split section { min-width: 0; }
+  .wallet { list-style: none; padding: 0; margin: 8px 0; }
+  .wallet li { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid #8883; }
+  .wallet input { width: auto; margin-top: 4px; }
+  .verifier { border: 1px solid #8886; border-radius: 10px; padding: 4px 12px 8px; margin: 10px 0; }
+  .verifier h4 { margin: 8px 0 0; }
+  .verifier h4 code { font-size: 0.8rem; font-weight: 400; }
+  .errname { font-family: ui-monospace, monospace; }
   details { margin: 8px 0; }
   summary { cursor: pointer; }
   .banner { border: 2px solid #2563eb; border-radius: 12px; padding: 10px 14px; font-weight: 600; }
   #qrBox { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0; }
   #qrImg svg { width: 260px; height: 260px; display: block; border-radius: 8px; }
   #qrInfo { flex: 1; min-width: 220px; }
+  .eudiQr svg { width: 220px; height: 220px; display: block; border-radius: 8px; }
 </style>
 </head>
 <body>
   <h1>ISO 證書 → Verifiable Credential <span class="badge" id="signBadge">UNSIGNED</span></h1>
-  <p class="hint">把一張 ISO 證書做成 W3C VC v2.0：① 填證書 → ② 生成 DID → ③ 生成 VC、簽名、驗證。</p>
+  <p class="hint">把一張 ISO 證書做成 W3C VC v2.0：① 填證書 → ② 生成 DID → ③ 生成 VC、簽名、驗證 → ④ 持有人出示 VP → ⑤ 用 EUDI 錢包領證、出示。</p>
 
   <div class="card">
     <h2>1. ISO 證書</h2>
@@ -192,6 +203,106 @@
     <input type="file" id="vcFileInput" accept=".json,application/json" hidden />
   </div>
 
+  <div class="card" id="vpCard">
+    <h2>4. VP：持有人出示</h2>
+    <p class="hint">持有人把 VC 包成 VP（Verifiable Presentation），用自己的私鑰簽名後交給驗證者。</p>
+    <div class="split">
+      <section>
+        <h3>👤 持有人錢包</h3>
+        <p><button id="btnWalletAdd">➕ 把目前簽好的 VC 放進錢包</button></p>
+        <ul class="wallet" id="walletList"><li class="hint">錢包是空的：先在第 3 卡簽好一張 VC。</li></ul>
+        <label for="vpMode">出示方式</label>
+        <select id="vpMode">
+          <option value="static">第一階段：靜態 VP（不指定驗證者）</option>
+          <option value="customs">第二階段：回應「海關」的請求</option>
+          <option value="shop">第二階段：回應「零售商」的請求</option>
+        </select>
+        <p><button class="primary" id="btnVpSign">🔏 產生並簽署 VP</button></p>
+        <p class="hint" id="vpStatus"></p>
+        <pre id="vpOut" hidden></pre>
+      </section>
+      <section>
+        <h3>🔎 驗證者</h3>
+        <label for="vpTtl">請求有效期</label>
+        <select id="vpTtl">
+          <option value="120000">2 分鐘</option>
+          <option value="10000">10 秒（示範過期）</option>
+        </select>
+        <div class="verifier" data-verifier="customs">
+          <h4>🛃 海關 <code>did:web:customs.example</code></h4>
+          <p><button data-action="request">📨 發出請求</button> <button data-action="submit">📥 提交 VP 給海關</button></p>
+          <p class="hint" data-role="request"></p>
+          <div data-role="result"></div>
+        </div>
+        <div class="verifier" data-verifier="shop">
+          <h4>🏬 零售商 <code>did:web:shop.example</code></h4>
+          <p><button data-action="request">📨 發出請求</button> <button data-action="submit">📥 提交 VP 給零售商</button></p>
+          <p class="hint" data-role="request"></p>
+          <div data-role="result"></div>
+        </div>
+        <div class="verifier">
+          <h4>第一階段：靜態驗證</h4>
+          <p class="hint">只驗簽章與持有人綁定，不檢查受眾和 challenge：同一份 VP 交幾次都會通過。</p>
+          <p><button id="btnVpStatic">📥 驗證 VP</button></p>
+          <div id="vpStaticResult"></div>
+        </div>
+      </section>
+    </div>
+    <details class="hint">
+      <summary>技術細節</summary>
+      <ul>
+        <li>VP = <code>holder</code> + <code>verifiableCredential[]</code>，整份由持有人私鑰簽名：<code>proofPurpose: authentication</code>，
+          <code>verificationMethod</code> 必須屬於 holder DID。</li>
+        <li>持有人綁定：每張 VC 的 <code>credentialSubject.id</code> 必須等於 VP 的 <code>holder</code>，拿別人的 VC 會失敗。</li>
+        <li>第二階段：驗證者發出一次性的 <code>challenge</code>（有期限）和自己的識別碼 <code>domain</code>，持有人把兩者放進 proof 一起簽。
+          驗證者會拒絕：domain 不是自己（<code>AudienceMismatchError</code>）、不是自己發的 challenge（<code>ChallengeMismatchError</code>）、
+          過期（<code>ChallengeExpiredError</code>）、用過（<code>ChallengeReusedError</code>）。</li>
+      </ul>
+    </details>
+  </div>
+
+  <div class="card" id="eudiCard">
+    <h2>5. EUDI 錢包（Lissi）</h2>
+    <p class="hint">用歐盟數位身分錢包領證與出示：OpenID4VCI 發一張 SD-JWT VC 到手機，OpenID4VP 讓手機出示給驗證者。需要啟動後端（<code>npm run server</code>）。</p>
+    <label for="eudiServer">後端網址</label>
+    <input id="eudiServer" placeholder="https://xxxx.trycloudflare.com" />
+    <p class="hint" id="eudiServerStatus"></p>
+    <div class="split">
+      <section>
+        <h3>📥 領證（OpenID4VCI）</h3>
+        <p class="hint">用第 1 卡的證書內容發證；每個欄位都可選擇揭露。</p>
+        <p><button class="primary" id="btnEudiOffer">產生領證 QR code</button></p>
+        <div class="eudiQr" id="eudiOfferQr"></div>
+        <p class="hint" id="eudiOfferStatus"></p>
+      </section>
+      <section>
+        <h3>🔎 出示（OpenID4VP）</h3>
+        <label for="eudiPrefix">驗證者識別方式（client_id）</label>
+        <select id="eudiPrefix">
+          <option value="x509_san_dns">x509_san_dns（憑證網域）</option>
+          <option value="x509_hash">x509_hash（憑證雜湊）</option>
+          <option value="redirect_uri">redirect_uri（不簽章）</option>
+        </select>
+        <p><button class="primary" id="btnEudiRequest">產生出示請求 QR code</button></p>
+        <div class="eudiQr" id="eudiRequestQr"></div>
+        <p class="hint" id="eudiRequestStatus"></p>
+        <div id="eudiResult"></div>
+      </section>
+    </div>
+    <details class="hint">
+      <summary>技術細節</summary>
+      <ul>
+        <li>領證：預授權碼流程。錢包用 offer 裡的一次性代碼換 access token，再用自己的金鑰簽一個含 <code>c_nonce</code> 的 proof，
+          後端發出綁定該金鑰（<code>cnf.jwk</code>）的 SD-JWT VC（<code>dc+sd-jwt</code>）。</li>
+        <li>出示：請求帶一次性 <code>nonce</code>（＝challenge）和驗證者的 <code>client_id</code>（＝受眾），x509 前綴時整份請求由後端憑證簽章。
+          錢包只揭露被要求的欄位，並附上 Key Binding JWT（<code>aud</code>、<code>nonce</code>、<code>sd_hash</code>）。</li>
+        <li>後端拒絕：受眾不對（<code>AudienceMismatchError</code>）、nonce 不對（<code>ChallengeMismatchError</code>）、
+          過期（<code>ChallengeExpiredError</code>）、重送（<code>ChallengeReusedError</code>），與第 4 卡相同。</li>
+        <li>後端憑證是自簽的示範憑證，不在歐盟信任清單上；正式錢包可能顯示警告或拒絕。</li>
+      </ul>
+    </details>
+  </div>
+
 <!-- ethers.js v6: secp256k1 / keccak256 / registry calls for did:ethr. If it fails to load (offline), did:key still works. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.17.0/ethers.umd.min.js"
         integrity="sha512-AtjhVooOwBRjcpe7YjaQI6VDIBYNqpPGbuhQi0RtmoWQDD9mf9tu4p2jGXLiSw0nhE1JBvOjAbQL43yrva6C2g=="
@@ -202,7 +313,7 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <!-- GitHub Pages lets browsers cache files for 10 minutes; old JS mixed with new HTML after a deploy breaks the page, so always fetch fresh JS -->
 <script>
-  for (const f of ["vc.js", "did-key.js", "did-web.js", "did-ethr.js", "ui.js"]) {
+  for (const f of ["vc.js", "did-key.js", "did-web.js", "did-ethr.js", "vp.js", "ui.js", "eudi.js"]) {
     const s = document.createElement("script");
     s.src = `./js/${f}?t=${Date.now()}`;
     s.async = false; // injected scripts are async by default; false keeps execution order

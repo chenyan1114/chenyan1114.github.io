@@ -138,7 +138,7 @@ DID_METHODS["did:web:"] = {
     return res;
   },
 
-  async ed25519Key(r, { did, didInfo, fragment }) {
+  async ed25519Key(r, { did, didInfo, fragment, purpose }) {
     const res = await this.resolve(did);
     const meta = res.didResolutionMetadata ?? {};
     if (meta.error) {
@@ -153,8 +153,7 @@ DID_METHODS["did:web:"] = {
     const doc = res.didDocument;
     const m = (doc.verificationMethod ?? []).find((v) => fragmentOf(v.id) === fragment);
     if (!r.check(!!m, `DID 文件中有 #${fragment}（${m?.type}）`, `DID 文件裡沒有 #${fragment}（金鑰不存在或已被移除）`)) return null;
-    if (!r.check((doc.assertionMethod ?? []).some((a) => fragmentOf(a.id ?? a) === fragment),
-      `#${fragment} 列在 assertionMethod（可用來簽發憑證）`, `#${fragment} 未列在 assertionMethod，不可用來簽發憑證`)) return null;
+    if (!checkRelationship(r, doc, fragment, purpose)) return null;
     try {
       return ed25519FromMethod(m);
     } catch (e) {

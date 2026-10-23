@@ -215,7 +215,7 @@ SUITES[ETHR.cryptosuite] = {
     return concatBytes(ethers.getBytes(s.r), ethers.getBytes(s.s), [s.yParity]);
   },
 
-  async verify(r, { hashData, sig, did, didInfo, fragment, rpcUrl }) {
+  async verify(r, { hashData, sig, did, didInfo, fragment, rpcUrl, purpose }) {
     const e = requireEthers();
     if (!r.check(e.toBigInt(sig.slice(32, 64)) <= e.N / 2n, "s 為 low-S", "s 不是 low-S（以太坊拒收可延展簽名）")) return;
     let recovered;
@@ -229,12 +229,11 @@ SUITES[ETHR.cryptosuite] = {
 
     const doc = await resolveForVerify(r, did, didInfo, rpcUrl);
     if (!doc) return;
-    // Find the key the verificationMethod points to; it must be authorized for assertionMethod
+    // Find the key the verificationMethod points to; it must be authorized for the proof's purpose
     const m = (doc.verificationMethod ?? []).find((v) => fragmentOf(v.id) === fragment);
     if (!r.check(!!m, `DID 文件中有 #${fragment}（${m?.type}）`,
       `DID 文件裡沒有 #${fragment}（金鑰不存在、已撤銷或已過期）`)) return;
-    r.check((doc.assertionMethod ?? []).some((a) => fragmentOf(a.id ?? a) === fragment),
-      `#${fragment} 列在 assertionMethod（可用來簽發憑證）`, `#${fragment} 未列在 assertionMethod，不可用來簽發憑證`);
+    checkRelationship(r, doc, fragment, purpose);
     let expected;
     try {
       expected = methodAddress(m);
@@ -245,8 +244,9 @@ SUITES[ETHR.cryptosuite] = {
     if (fragment === "controller" && expected !== didInfo.address) {
       r.warns.push(`此 DID 的 owner 已在鏈上轉移至 ${expected}，以新 owner 為準`);
     }
+    const who = purpose === "authentication" ? "holder" : "issuer";
     r.check(recovered === expected,
-      `secp256k1 簽名驗證通過：回推地址 = #${fragment} 的地址（未竄改 ✓ 確為 issuer 授權的金鑰所簽 ✓）`,
-      `簽名驗證失敗：回推地址 ${recovered} ≠ #${fragment} 的地址 ${expected}（文件曾被竄改，或非 issuer 授權的金鑰所簽）`);
+      `secp256k1 簽名驗證通過：回推地址 = #${fragment} 的地址（未竄改 ✓ 確為 ${who} 授權的金鑰所簽 ✓）`,
+      `簽名驗證失敗：回推地址 ${recovered} ≠ #${fragment} 的地址 ${expected}（文件曾被竄改，或非 ${who} 授權的金鑰所簽）`);
   },
 };

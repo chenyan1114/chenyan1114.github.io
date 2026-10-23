@@ -4,6 +4,7 @@
 const $ = (id) => document.getElementById(id);
 let issuerKeys = null, holderKeys = null; // private keys live in memory only and vanish on reload
 let wallet = null; // connected MetaMask: { provider, signer, address, did }
+const holderWallet = []; // signed VCs the holder keeps for presenting (card 4)
 
 function onEl(el, handler) {
   el.addEventListener("click", async () => {
@@ -42,6 +43,7 @@ function renderKeys(status) {
   $("issuerDid").textContent = issuerKeys?.did ?? "尚未生成";
   $("holderDid").textContent = holderKeys?.did ?? "尚未生成";
   $("keyMethod").textContent = status;
+  renderWallet(); // a new holder DID changes which wallet VCs are "mine"
   // did:web: offer the DID document for publishing at the URL the DID points to
   const doc = issuerKeys?.didDocument;
   $("webDocBox").hidden = !doc;
@@ -76,8 +78,8 @@ function showVc(vc) {
   $("signBadge").classList.toggle("signed", !!suite);
 }
 
-function renderReport(r) {
-  const box = $("vcVerify");
+/* r.errors (typed VP errors such as AudienceMismatchError) are named in the summary line */
+function renderReport(r, box = $("vcVerify")) {
   box.replaceChildren();
   const add = (cls, text, tag = "div") => {
     const el = document.createElement(tag);
@@ -85,8 +87,9 @@ function renderReport(r) {
     el.textContent = text;
     box.append(el);
   };
+  const names = [...new Set((r.errors ?? []).map((e) => e.name))].join("、");
   add(r.fails.length ? "err summary" : "ok summary", r.fails.length
-    ? `驗證失敗：${r.fails.length} 項錯誤`
+    ? `驗證失敗：${names || r.fails.length + " 項錯誤"}`
     : `驗證通過：${r.passes.length} 項檢查全過${r.warns.length ? `（另 ${r.warns.length} 項提醒）` : ""}`, "p");
   for (const [cls, sym, list] of [["err", "✗", r.fails], ["warn", "⚠", r.warns], ["pass", "✓", r.passes], ["info", "ℹ", r.infos]]) {
     for (const t of list) add(cls, sym + " " + t);
@@ -382,3 +385,106 @@ onJsonFile("vcFileInput",
     showStatus("vcCheck", "ok", `已載入 ${name}${vc.proof !== undefined ? "" : "（未簽名）"}。`);
   },
   (e) => showStatus("vcCheck", "err", "VC 檔解析失敗：" + e.message));
+
+/* ---------- 4. VP: the holder presents VCs to a verifier ---------- */
+const verifiers = {
+  customs: { name: "海關", v: new Verifier("did:web:customs.example") },
+  shop: { name: "零售商", v: new Verifier("did:web:shop.example") },
+};
+const verifierBox = (key) => document.querySelector(`.verifier[data-verifier="${key}"]`);
+const shortDid = (did) => (String(did).length > 34 ? String(did).slice(0, 22) + "…" + String(did).slice(-8) : String(did));
+
+function renderWallet() {
+  const list = $("walletList");
+  list.replaceChildren();
+  if (!holderWallet.length) {
+    list.innerHTML = '<li class="hint">錢包是空的：先在第 3 卡簽好一張 VC。</li>';
+    return;
+  }
+  holderWallet.forEach((vc, i) => {
+    const li = document.createElement("li");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = true;
+    box.dataset.index = i;
+    const text = document.createElement("div");
+    const s = vc.credentialSubject ?? {};
+    const mine = s.id === holderKeys?.did;
+    text.innerHTML = "<strong></strong><br><span class='hint'></span>";
+    text.querySelector("strong").textContent = `${s.certificationStandard ?? "VC"} · ${s.certificateNumber ?? ""}`;
+    text.querySelector("span").textContent = `發證：${shortDid(vc.issuer)}${mine ? "" : `　⚠ 發給 ${shortDid(s.id)}，不是目前的持有人`}`;
+    li.append(box, text);
+    list.append(li);
+  });
+}
+
+on("btnWalletAdd", () => {
+  try {
+    const vc = JSON.parse($("vcOut").textContent);
+    if (vc.proof === undefined) throw new Error("這張 VC 還沒簽名");
+    if (holderWallet.some((x) => x.id === vc.id)) throw new Error("這張 VC 已經在錢包裡");
+    holderWallet.push(vc);
+    renderWallet();
+    $("vpStatus").textContent = `✓ 錢包裡有 ${holderWallet.length} 張 VC。`;
+  } catch (e) {
+    $("vpStatus").textContent = "無法加入：" + (e instanceof SyntaxError ? "第 3 卡還沒有 VC" : e.message);
+  }
+});
+
+on("btnVpSign", async () => {
+  try {
+    const picked = [...document.querySelectorAll("#walletList input:checked")].map((b) => holderWallet[b.dataset.index]);
+    const mode = $("vpMode").value;
+    let request;
+    if (mode !== "static") {
+      request = verifiers[mode].request;
+      if (!request) throw new Error(`請先讓${verifiers[mode].name}「📨 發出請求」`);
+    }
+    const vp = await signVp(buildVp(holderKeys?.did, picked), holderKeys, request);
+    $("vpOut").textContent = JSON.stringify(vp, null, 2);
+    $("vpOut").hidden = false;
+    $("vpStatus").textContent = request
+      ? `✓ 已簽署 VP（含 ${picked.length} 張 VC），綁定${verifiers[mode].name}的 challenge 與 domain。`
+      : `✓ 已簽署靜態 VP（含 ${picked.length} 張 VC），沒有指定驗證者。`;
+  } catch (e) {
+    $("vpStatus").textContent = "簽署失敗：" + e.message;
+  }
+});
+
+const currentVp = () => JSON.parse($("vpOut").textContent || "null");
+
+for (const [key, { name, v }] of Object.entries(verifiers)) {
+  const box = verifierBox(key);
+  onEl(box.querySelector('[data-action="request"]'), () => {
+    v.ttlMs = Number($("vpTtl").value);
+    verifiers[key].request = v.createRequest();
+    box.querySelector('[data-role="result"]').replaceChildren();
+    renderRequests();
+  });
+  onEl(box.querySelector('[data-action="submit"]'), async () => {
+    const result = box.querySelector('[data-role="result"]');
+    const vp = currentVp();
+    if (!vp) return renderReport({ fails: ["請先產生並簽署一份 VP"], warns: [], passes: [], infos: [] }, result);
+    result.textContent = `${name}驗證中…`;
+    renderReport(await v.verify(vp, { rpcUrl: $("inRpc").value.trim() || undefined }), result);
+  });
+}
+
+/* Show each verifier's latest request with a live countdown */
+function renderRequests() {
+  for (const [key, { request }] of Object.entries(verifiers)) {
+    const el = verifierBox(key).querySelector('[data-role="request"]');
+    if (!request) { el.textContent = ""; continue; }
+    const left = Math.round((Date.parse(request.expiresAt) - Date.now()) / 1000);
+    el.textContent = `challenge ${request.challenge.slice(0, 10)}…　domain ${request.domain}　` +
+      (left > 0 ? `剩 ${left} 秒` : "已過期");
+  }
+}
+setInterval(renderRequests, 1000);
+
+on("btnVpStatic", async () => {
+  const vp = currentVp();
+  if (!vp) return renderReport({ fails: ["請先產生並簽署一份 VP"], warns: [], passes: [], infos: [] }, $("vpStaticResult"));
+  $("vpStaticResult").textContent = "驗證中…";
+  renderReport(await verifyVp(vp, { rpcUrl: $("inRpc").value.trim() || undefined }), $("vpStaticResult"));
+});
