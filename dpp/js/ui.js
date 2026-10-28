@@ -78,22 +78,22 @@ function showVc(vc) {
   $("signBadge").classList.toggle("signed", !!suite);
 }
 
-/* r.errors (typed VP errors such as AudienceMismatchError) are named in the summary line */
-function renderReport(r, box = $("vcVerify")) {
+/* r.errors (typed VP errors such as AudienceMismatchError) are named in the summary line.
+   The individual checks fold under the summary; they start open only when something failed. */
+function renderReport(r, box = $("vcVerify"), { collapsible = true } = {}) {
   box.replaceChildren();
-  const add = (cls, text, tag = "div") => {
-    const el = document.createElement(tag);
-    el.className = cls;
-    el.textContent = text;
-    box.append(el);
-  };
   const names = [...new Set((r.errors ?? []).map((e) => e.name))].join("、");
-  add(r.fails.length ? "err summary" : "ok summary", r.fails.length
+  const head = document.createElement(collapsible ? "summary" : "p");
+  head.className = r.fails.length ? "err summary" : "ok summary";
+  head.textContent = r.fails.length
     ? `驗證失敗：${names || r.fails.length + " 項錯誤"}`
-    : `驗證通過：${r.passes.length} 項檢查全過${r.warns.length ? `（另 ${r.warns.length} 項提醒）` : ""}`, "p");
+    : `驗證通過：${r.passes.length} 項檢查全過${r.warns.length ? `（另 ${r.warns.length} 項提醒）` : ""}`;
+  const body = collapsible ? Object.assign(document.createElement("details"), { open: r.fails.length > 0 }) : box;
+  body.append(head);
   for (const [cls, sym, list] of [["err", "✗", r.fails], ["warn", "⚠", r.warns], ["pass", "✓", r.passes], ["info", "ℹ", r.infos]]) {
-    for (const t of list) add(cls, sym + " " + t);
+    for (const t of list) body.append(Object.assign(document.createElement("div"), { className: cls, textContent: sym + " " + t }));
   }
+  if (collapsible) box.append(body);
 }
 
 /* ---------- 1. ISO certificate ---------- */
@@ -442,7 +442,6 @@ on("btnVpSign", async () => {
     }
     const vp = await signVp(buildVp(holderKeys?.did, picked), holderKeys, request);
     $("vpOut").textContent = JSON.stringify(vp, null, 2);
-    $("vpOut").hidden = false;
     $("vpStatus").textContent = request
       ? `✓ 已簽署 VP（含 ${picked.length} 張 VC），綁定${verifiers[mode].name}的 challenge 與 domain。`
       : `✓ 已簽署靜態 VP（含 ${picked.length} 張 VC），沒有指定驗證者。`;
