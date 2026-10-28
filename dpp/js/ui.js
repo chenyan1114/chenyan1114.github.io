@@ -450,7 +450,22 @@ on("btnVpSign", async () => {
   }
 });
 
-const currentVp = () => JSON.parse($("vpOut").textContent || "null");
+/* The <pre> holds the current VP, like vcOut does for the VC; before signing it holds a hint */
+const currentVp = () => { try { return JSON.parse($("vpOut").textContent); } catch { return null; } };
+
+on("btnVpCopy", async () => {
+  if (!currentVp()) return void ($("vpStatus").textContent = "還沒有 VP：先按「產生並簽署 VP」。");
+  try {
+    await navigator.clipboard.writeText($("vpOut").textContent);
+    $("vpStatus").textContent = "已複製 VP。";
+  } catch {
+    $("vpStatus").textContent = "複製失敗：瀏覽器不允許存取剪貼簿。";
+  }
+});
+on("btnVpDownload", () => {
+  if (!currentVp()) return void ($("vpStatus").textContent = "還沒有 VP：先按「產生並簽署 VP」。");
+  downloadText($("vpOut").textContent, "vp.json");
+});
 
 for (const [key, { name, v }] of Object.entries(verifiers)) {
   const box = verifierBox(key);

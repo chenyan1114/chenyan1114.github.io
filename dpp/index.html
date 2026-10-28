@@ -231,9 +231,8 @@
           <option value="shop">第二階段：回應「零售商」的請求</option>
         </select>
         </div>
-        <p><button class="primary" id="btnVpSign">🔏 產生並簽署 VP</button></p>
+        <p><button class="primary" id="btnVpSign">🔏 產生並簽署 VP</button> <button id="btnVpCopy">複製</button> <button id="btnVpDownload">下載</button></p>
         <p class="hint" id="vpStatus"></p>
-        <pre id="vpOut" hidden></pre>
       </section>
       <section>
         <h3>🔎 驗證者</h3>
@@ -264,6 +263,7 @@
         </div>
       </section>
     </div>
+    <pre id="vpOut">把簽好的 VC 放進錢包，再按「產生並簽署 VP」。</pre>
     <details class="hint">
       <summary>技術細節</summary>
       <ul>
