@@ -1,0 +1,16 @@
+{
+  "issuer": "https://chenyan1114.github.io",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "EC",
+        "x": "udDs5NF7N_1EYLHRKHD6dqNHQlCp-4BjwL1cf5VrJcE",
+        "y": "nZ3BUqnB-C5RpOLu_11lqUwromkwQSrZBoRA0t6YZ3Y",
+        "crv": "P-256",
+        "kid": "server-key-1",
+        "alg": "ES256",
+        "use": "sig"
+      }
+    ]
+  }
+}
