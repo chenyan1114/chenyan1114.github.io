@@ -11,21 +11,15 @@ const eudiApi = async (path, body) => {
   return json;
 };
 
-/* Draw a QR code plus an "open on this phone" link for a wallet link */
+/* Draw the QR code for a wallet link */
 function showWalletLink(boxId, link) {
   const box = $(boxId);
   box.replaceChildren();
-  if (typeof qrcode !== "undefined") {
-    const qr = qrcode(0, "M");
-    qr.addData(link, "Byte");
-    qr.make();
-    box.insertAdjacentHTML("beforeend", qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true }));
-  }
-  const open = Object.assign(document.createElement("a"), { href: link, textContent: "📱 用這支手機打開錢包" });
-  const p = document.createElement("p");
-  p.className = "hint";
-  p.append(open);
-  box.append(p);
+  if (typeof qrcode === "undefined") return;
+  const qr = qrcode(0, "M");
+  qr.addData(link, "Byte");
+  qr.make();
+  box.insertAdjacentHTML("beforeend", qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true }));
 }
 
 async function connectEudi(url) {
@@ -65,11 +59,6 @@ const timeOf = (ms) => new Date(ms).toLocaleTimeString("zh-TW", { hour12: false 
 async function refreshFeed() {
   let feed;
   try { feed = await eudiApi("/api/feed"); } catch { return; } // keep the last view through brief network hiccups
-  const issued = feed.issued.filter((o) => o.status === "issued").length;
-  const ok = feed.presented.filter((p) => p.status === "verified").length;
-  $("eudiIssued").textContent = `已領證 ${issued} 人`;
-  $("eudiPresented").textContent = `已出示 ${feed.presented.length} 人（✓ ${ok}　✗ ${feed.presented.length - ok}）`;
-
   const key = feed.presented.map((p) => p.createdAt + p.status).join();
   if (key === eudi.shown) return; // re-render only when something new arrived, so opened rows stay open
   eudi.shown = key;

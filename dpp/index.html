@@ -57,7 +57,6 @@
   @media (max-width: 640px) { .eudiSteps { grid-template-columns: 1fr; } }
   .eudiStep { border: 1px solid #8886; border-radius: 12px; padding: 4px 16px 8px; text-align: center; }
   .eudiQr svg { width: min(260px, 100%); height: auto; display: block; margin: 0 auto; border-radius: 8px; }
-  .count { font-size: 1.2rem; font-weight: 700; }
   .feed { list-style: none; padding: 0; margin: 8px 0; max-height: 320px; overflow: auto; }
   .feed li { border-bottom: 1px solid #8883; padding: 4px 0; }
   .feed summary { font-weight: 600; }
@@ -285,12 +284,10 @@
         <section class="eudiStep">
           <h3>① 掃描領證</h3>
           <div class="eudiQr" id="eudiOfferQr"></div>
-          <p class="count" id="eudiIssued">已領證 0 人</p>
         </section>
         <section class="eudiStep">
           <h3>② 掃描出示</h3>
           <div class="eudiQr" id="eudiRequestQr"></div>
-          <p class="count" id="eudiPresented">已出示 0 人</p>
         </section>
       </div>
       <h3>即時結果</h3>
