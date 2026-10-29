@@ -222,20 +222,17 @@
         <h3>👤 持有人錢包</h3>
         <p><button id="btnWalletAdd">➕ 把目前簽好的 VC 放進錢包</button></p>
         <ul class="wallet" id="walletList"><li class="hint">錢包是空的：先在第 3 卡簽好一張 VC。</li></ul>
-        <div hidden><!-- phase 2 hidden for now -->
         <label for="vpMode">出示方式</label>
         <select id="vpMode">
           <option value="static">第一階段：靜態 VP（不指定驗證者）</option>
           <option value="customs">第二階段：回應「海關」的請求</option>
           <option value="shop">第二階段：回應「零售商」的請求</option>
         </select>
-        </div>
         <p><button class="primary" id="btnVpSign">🔏 產生並簽署 VP</button> <button id="btnVpCopy">複製</button> <button id="btnVpDownload">下載</button></p>
         <p class="hint" id="vpStatus"></p>
       </section>
       <section>
         <h3>🔎 驗證者</h3>
-        <div hidden><!-- phase 2 hidden for now -->
         <label for="vpTtl">請求有效期</label>
         <select id="vpTtl">
           <option value="120000">2 分鐘</option>
@@ -253,7 +250,6 @@
           <p class="hint" data-role="request"></p>
           <div data-role="result"></div>
         </div>
-        </div>
         <div class="verifier">
           <h4>第一階段：靜態驗證</h4>
           <p class="hint">只驗簽章與持有人綁定，不檢查受眾和 challenge：同一份 VP 交幾次都會通過。</p>
@@ -269,7 +265,7 @@
         <li>VP = <code>holder</code> + <code>verifiableCredential[]</code>，整份由持有人私鑰簽名：<code>proofPurpose: authentication</code>，
           <code>verificationMethod</code> 必須屬於 holder DID。</li>
         <li>持有人綁定：每張 VC 的 <code>credentialSubject.id</code> 必須等於 VP 的 <code>holder</code>，拿別人的 VC 會失敗。</li>
-        <li hidden>第二階段：驗證者發出一次性的 <code>challenge</code>（有期限）和自己的識別碼 <code>domain</code>，持有人把兩者放進 proof 一起簽。
+        <li>第二階段：驗證者發出一次性的 <code>challenge</code>（有期限）和自己的識別碼 <code>domain</code>，持有人把兩者放進 proof 一起簽。
           驗證者會拒絕：domain 不是自己（<code>AudienceMismatchError</code>）、不是自己發的 challenge（<code>ChallengeMismatchError</code>）、
           過期（<code>ChallengeExpiredError</code>）、用過（<code>ChallengeReusedError</code>）。</li>
       </ul>
