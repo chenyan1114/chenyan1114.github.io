@@ -53,9 +53,8 @@
   #qrImg svg { width: 260px; height: 260px; display: block; border-radius: 8px; }
   #qrInfo { flex: 1; min-width: 220px; }
   .logo { width: 1.4em; height: 1.4em; vertical-align: -0.3em; border-radius: 22%; }
-  .eudiSteps { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 640px) { .eudiSteps { grid-template-columns: 1fr; } }
-  .eudiStep { border: 1px solid #8886; border-radius: 12px; padding: 4px 16px 8px; text-align: center; }
+  .eudiSteps { display: flex; flex-wrap: wrap; gap: 16px; }
+  .eudiStep { flex: 1 1 260px; border: 1px solid #8886; border-radius: 12px; padding: 4px 16px 8px; text-align: center; }
   .eudiQr svg { width: min(260px, 100%); height: auto; display: block; margin: 0 auto; border-radius: 8px; }
   .feed { list-style: none; padding: 0; margin: 8px 0; max-height: 320px; overflow: auto; }
   .feed li { border-bottom: 1px solid #8883; padding: 4px 0; }
@@ -274,20 +273,22 @@
 
   <div class="card" id="eudiCard">
     <h2>5. EUDI 錢包（Lissi）</h2>
-    <p class="hint">用手機上的歐盟數位身分錢包領一張 ISO 證書，再出示給驗證者。兩個 QR code 全場都能掃，每個人各自領到、各自驗證。</p>
+    <p class="hint">用手機上的歐盟數位身分錢包領一張 ISO 證書。QR code 全場都能掃，每個人各自領到自己的證書。</p>
     <div id="eudiStage" hidden>
       <div class="eudiSteps">
         <section class="eudiStep">
-          <h3>① 掃描領證</h3>
+          <h3>掃描領證</h3>
           <div class="eudiQr" id="eudiOfferQr"></div>
         </section>
-        <section class="eudiStep">
+        <section class="eudiStep" hidden><!-- OpenID4VP hidden for now -->
           <h3>② 掃描出示</h3>
           <div class="eudiQr" id="eudiRequestQr"></div>
         </section>
       </div>
+      <div hidden><!-- OpenID4VP hidden for now -->
       <h3>即時結果</h3>
       <ul class="feed" id="eudiFeed"></ul>
+      </div>
       <p><button id="btnEudiFull">⛶ 全螢幕</button> <button id="btnEudiRestart">🔄 用第 1 卡內容重新產生</button></p>
     </div>
     <details class="hint">
@@ -295,22 +296,24 @@
       <label for="eudiServer">後端網址</label>
       <input id="eudiServer" placeholder="https://xxxx.trycloudflare.com" />
       <p id="eudiServerStatus"></p>
+      <div hidden><!-- OpenID4VP hidden for now -->
       <label for="eudiPrefix">驗證者識別方式（client_id）</label>
       <select id="eudiPrefix">
         <option value="x509_san_dns">x509_san_dns（憑證網域）</option>
         <option value="x509_hash">x509_hash（憑證雜湊）</option>
       </select>
       <p>目前的 client_id：<code id="eudiClientId"></code></p>
+      </div>
     </details>
     <details class="hint">
       <summary>技術細節</summary>
       <ul>
-        <li>QR code 只放網址（<code>credential_offer_uri</code>／<code>request_uri</code>）。每次掃描，後端都產生新的一次性領證碼或 nonce，所以大家掃同一個 QR code 也互不干擾。</li>
+        <li>QR code 只放網址（<code>credential_offer_uri</code>）。每次掃描，後端都產生新的一次性領證碼，所以大家掃同一個 QR code 也互不干擾。</li>
         <li>領證：預授權碼流程。錢包用領證碼換 access token，再用自己的金鑰簽一個含 <code>c_nonce</code> 的 proof，
           後端發出綁定該金鑰（<code>cnf.jwk</code>）的 SD-JWT VC（<code>dc+sd-jwt</code>）。</li>
-        <li>出示：請求帶一次性 <code>nonce</code>（＝challenge）和驗證者的 <code>client_id</code>（＝受眾），整份請求由後端憑證簽章。
+        <li hidden>出示：請求帶一次性 <code>nonce</code>（＝challenge）和驗證者的 <code>client_id</code>（＝受眾），整份請求由後端憑證簽章。
           錢包只揭露被要求的欄位，並附上 Key Binding JWT（<code>aud</code>、<code>nonce</code>、<code>sd_hash</code>）。</li>
-        <li>後端拒絕：受眾不對（<code>AudienceMismatchError</code>）、nonce 不對（<code>ChallengeMismatchError</code>）、
+        <li hidden>後端拒絕：受眾不對（<code>AudienceMismatchError</code>）、nonce 不對（<code>ChallengeMismatchError</code>）、
           過期（<code>ChallengeExpiredError</code>）、重送（<code>ChallengeReusedError</code>），與第 4 卡相同。</li>
         <li>後端憑證是自簽的示範憑證，不在歐盟信任清單上；正式錢包可能顯示警告或拒絕。</li>
       </ul>
