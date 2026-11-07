@@ -268,12 +268,10 @@ async function currentBlock() {
 
 on("btnIssue", async () => {
   try {
-    const vc = buildVc(readForm(), issuerKeys?.did, holderKeys?.did);
-    if (issuerKeys?.viaWallet) { // its history can go on chain, with the backend picked in "⛓ VC 歷程上鏈"
-      vc.credentialStatus = $("ledgerMode").value === "eas" ? easStatusEntry(vc.issuer, await currentBlock()) : ledgerStatusEntry(vc.issuer);
-    } else if (String(vc.issuer).startsWith("did:web:")) { // a domain can host status lists next to did.json
-      vc.credentialStatus = statusEntries(vc.issuer);
-    }
+    const vc = VcEngine.isoCertificate(readForm(), issuerKeys?.did, holderKeys?.did);
+    // MetaMask issuer: history on chain (backend picked in "⛓ VC 歷程上鏈"); did:web: status lists next to did.json
+    const status = await VcEngine.statusFor(issuerKeys, { ledger: $("ledgerMode").value, blockNumber: currentBlock });
+    if (status) vc.credentialStatus = status;
     showVc(vc);
     const { fails } = verifyVc(vc);
     showStatus("vcCheck", fails.length ? "err" : "ok",
@@ -290,14 +288,12 @@ on("btnSign", async () => {
     if (!issuerKeys || issuerKeys.did !== vc.issuer) {
       throw new Error("這份 VC 的 issuer 不是頁面上目前的 DID，請重新生成 VC。");
     }
-    if (issuerKeys.viaWallet && !issuerKeys.verificationMethod) {
-      throw new Error("請先在第 2 卡 🔗 授權簽名金鑰。");
-    }
-    const proof = await createProof(vc, issuerKeys);
-    showVc({ ...vc, proof });
-    showStatus("vcCheck", "ok", `✓ 已簽名（${proof.cryptosuite}）。` +
-      (LEDGER_BACKENDS[vc.credentialStatus?.type] ? "下一步可以在下方「⛓ VC 歷程上鏈」登記簽發。"
-        : [].concat(vc.credentialStatus ?? [])[0]?.type === "BitstringStatusListEntry" ? "之後可以在下方「🚫 撤銷與暫停」撤銷或暫停這張。" : ""));
+    const signed = await VcEngine.sign(vc, issuerKeys);
+    showVc(signed);
+    const kind = VcEngine.status.kind(vc);
+    showStatus("vcCheck", "ok", `✓ 已簽名（${signed.proof.cryptosuite}）。` +
+      (kind === "erc1056" || kind === "eas" ? "下一步可以在下方「⛓ VC 歷程上鏈」登記簽發。"
+        : kind === "bitstring" ? "之後可以在下方「🚫 撤銷與暫停」撤銷或暫停這張。" : ""));
   } catch (e) {
     showStatus("vcCheck", "err", "簽名失敗：" + e.message);
   }
@@ -306,19 +302,7 @@ on("btnSign", async () => {
 /* form = compare against the page's form and DIDs (issuer view); omitted for a VC opened from a QR code */
 async function runVerify(vc, form) {
   $("vcVerify").textContent = "驗證中…";
-  const r = verifyVc(vc, form);
-  if (isPlainObject(vc) && vc.proof !== undefined) {
-    const rpcUrl = $("inRpc").value.trim() || undefined;
-    for (const [tag, check] of [["簽名", () => verifyProof(vc, { rpcUrl })], ["狀態", () => verifyStatus(vc, { rpcUrl })]]) {
-      try {
-        const pr = await check();
-        for (const k of ["passes", "warns", "fails", "infos"]) r[k].push(...pr[k].map((t) => `[${tag}] ${t}`));
-      } catch (e) {
-        r.fails.push(`[${tag}] 驗證過程出錯：` + e.message);
-      }
-    }
-  }
-  renderReport(r);
+  renderReport(await VcEngine.verify(vc, { form, profile: "iso", rpcUrl: $("inRpc").value.trim() || undefined }));
 }
 
 /* ---------- Revocation / suspension with W3C Bitstring Status Lists (did:web issuers) ---------- */
@@ -337,25 +321,25 @@ function renderStatusPending() {
 }
 renderStatusPending();
 
-async function statusAction(purpose, set) {
+async function statusAction(action) {
   let vc;
   try {
     vc = JSON.parse($("vcOut").textContent);
   } catch {}
   if (!isPlainObject(vc) || vc.proof === undefined) return showStatus("statusMsg", "err", "請先在上方生成並簽名一份 VC（或上傳一份）。");
-  const label = set ? STATUS.purposes[purpose] : "恢復";
+  const label = { revoke: "撤銷", suspend: "暫停", reinstate: "恢復" }[action];
   showStatus("statusMsg", "", "讀取目前的狀態清單…");
   try {
-    await updateStatus(issuerKeys, vc, purpose, set);
-    showStatus("statusMsg", "ok", `✓ 已${label}：簽好新版${STATUS.purposes[purpose]}清單（本頁暫存）。按 🔍 驗證 會看到新狀態；放上網站後其他人才看得到。`);
+    const list = await VcEngine.status.change(vc, issuerKeys, action);
+    showStatus("statusMsg", "ok", `✓ 已${label}：簽好新版${STATUS.purposes[list.credentialSubject.statusPurpose]}清單（本頁暫存）。按 🔍 驗證 會看到新狀態；放上網站後其他人才看得到。`);
   } catch (e) {
     showStatus("statusMsg", "err", `${label}失敗：` + e.message);
   }
   renderStatusPending();
 }
-on("btnStatusRevoke", () => statusAction("revocation", true));
-on("btnStatusSuspend", () => statusAction("suspension", true));
-on("btnStatusReinstate", () => statusAction("suspension", false));
+on("btnStatusRevoke", () => statusAction("revoke"));
+on("btnStatusSuspend", () => statusAction("suspend"));
+on("btnStatusReinstate", () => statusAction("reinstate"));
 
 /* ---------- VC history on chain (ERC-1056 events written by the issuer's MetaMask account) ---------- */
 const showLedger = (cls, text, txHash) => showTx("ledgerStatus", cls, text, txHash);
@@ -391,7 +375,7 @@ const easAnchorLink = (uid, text = " easscan ↗") =>
 
 /* This VC's EAS attestations (issue, suspensions, lifts, revocation) */
 async function showEasHistory(vc) {
-  const st = await easVcFor(vc);
+  const st = await VcEngine.status.onChain(vc, { rpcUrl: ledgerRpc() });
   const rows = st.history.map((ev) => {
     const li = Object.assign(document.createElement("li"), { className: "mine",
       textContent: `${new Date(ev.time * 1000).toLocaleString()}　${LEDGER.labels[ev.action]} VC（這張）${ev.block ? `（區塊 ${ev.block}）` : ""}` });
@@ -404,66 +388,25 @@ async function showEasHistory(vc) {
   return { total: rows.length, mine: rows.length };
 }
 
-async function easVcFor(vc) {
-  const reader = EAS.reader(ledgerRpc());
-  try {
-    return await easVcState(reader, DID_METHODS["did:ethr:"].parse(vc.issuer).address, vc, vc.credentialStatus?.fromBlock);
-  } finally {
-    reader.close?.();
-  }
-}
-
-/* Two ways to keep a VC's history on chain; the VC's credentialStatus type decides which one applies */
-const LEDGER_BACKENDS = {
-  [LEDGER.statusType]: {
-    state: async (vc) => vcLedgerState(await LEDGER.read(wallet.address, ledgerRpc()), vcStatusKey(vc)),
-    record: (action, vc) => recordVcEvent(wallet, action, vc),
-    history: showLedgerHistory,
-  },
-  [EAS.statusType]: {
-    state: easVcFor,
-    async record(action, vc, st) {
-      const reader = EAS.reader(ledgerRpc());
-      try {
-        const schema = action === "suspended" ? "suspension" : action === "issued" ? "vc" : null;
-        if (schema && !(await reader.schemaExists(easSchemaUid(schema)))) {
-          showLedger("", `第一次使用：先註冊 EAS schema「${EAS.schemas[schema].label}」（只需一次，之後大家共用），請在 MetaMask 確認…`);
-          await easEnsureSchema(wallet, schema, reader);
-          showLedger("", "schema 已註冊。請再確認一筆交易，把紀錄寫上鏈…");
-        }
-      } finally {
-        reader.close?.();
-      }
-      return easRecordVcEvent(wallet, action, vc, st);
-    },
-    history: showEasHistory,
-  },
-};
-
 /* Check the current on-chain state first, so a pointless transaction never reaches MetaMask */
 async function ledgerAction(action) {
   const vc = currentSignedVc();
   if (!vc) return;
   const label = LEDGER.labels[action];
-  const backend = LEDGER_BACKENDS[vc.credentialStatus?.type];
-  if (!backend) {
+  const kind = VcEngine.status.kind(vc);
+  if (kind !== "erc1056" && kind !== "eas") {
     return showLedger("err", "這份 VC 沒有鏈上狀態欄位：請先在第 2 卡 B 用 MetaMask 發證，再重新生成並簽名。");
   }
-  if (!wallet || wallet.did !== vc.issuer) return showLedger("err", "只有發證帳戶本人能寫入：請用這張 VC 的 issuer 帳戶連接 MetaMask。");
   let res;
   try {
-    showLedger("", "讀取鏈上目前的狀態…");
-    const st = await backend.state(vc);
-    const refusal = ledgerRefusal(st, action);
-    if (refusal) return showLedger("err", refusal);
-    showLedger("", "請在 MetaMask 確認交易，上鏈約需 10–30 秒…");
-    res = await backend.record(action, vc, st);
+    showLedger("", "讀取鏈上目前的狀態，再請你在 MetaMask 確認交易（上鏈約需 10–30 秒）…");
+    res = await VcEngine.status.record(vc, wallet, action, { rpcUrl: ledgerRpc(), onStep: (text) => showLedger("", text) });
   } catch (e) {
-    return showLedger("err", `${label}失敗：` + walletErrorMessage(e));
+    return showLedger("err", e.refused ? e.message : `${label}失敗：` + walletErrorMessage(e));
   }
   showLedger("ok", `✓ 已上鏈：${label}這張 VC。按 🔍 驗證 會讀到新狀態。`, res.hash);
   if (res.uid && action !== "revoked" && action !== "reinstated") $("ledgerStatus").append(easAnchorLink(res.uid));
-  try { await backend.history(vc); } catch {} // the tx already landed; the timeline can be reloaded later
+  try { await (kind === "eas" ? showEasHistory(vc) : showLedgerHistory(vc)); } catch {} // the tx landed; the timeline can be reloaded
 }
 
 on("btnLedgerIssue", () => ledgerAction("issued"));
@@ -512,7 +455,7 @@ on("btnQr", async () => {
   }
   if (vc.proof === undefined) return showStatus("vcCheck", "err", "請先簽名：沒有簽名的 VC 掃了也無法驗證是誰發的。");
   if (typeof qrcode === "undefined") return showStatus("vcCheck", "err", "QR code 函式庫沒有載入（需要網路）。");
-  shareLink = `${location.origin}${location.pathname}#vc=${await packVc(vc)}`;
+  shareLink = `${location.origin}${location.pathname}#vc=${await VcEngine.pack(vc)}`;
   let qr = null;
   for (const level of ["M", "L"]) { // prefer more error correction; fall back if the link is too long
     try { qr = qrcode(0, level); qr.addData(shareLink, "Byte"); qr.make(); break; } catch { qr = null; }
@@ -542,7 +485,7 @@ async function openSharedVc() {
   const m = /^#vc=([A-Za-z0-9_-]+)$/.exec(location.hash);
   if (!m) return;
   try {
-    const vc = await unpackVc(m[1]);
+    const vc = await VcEngine.unpack(m[1]);
     showVc(vc);
     $("sharedBanner").hidden = false;
     $("vcCard").scrollIntoView({ behavior: "smooth" });
@@ -628,7 +571,7 @@ on("btnVpSign", async () => {
       request = verifiers[mode].request;
       if (!request) throw new Error(`請先讓${verifiers[mode].name}「📨 發出請求」`);
     }
-    const vp = await signVp(buildVp(holderKeys?.did, picked), holderKeys, request);
+    const vp = await VcEngine.present(picked, holderKeys, request);
     $("vpOut").textContent = JSON.stringify(vp, null, 2);
     $("vpStatus").textContent = request
       ? `✓ 已簽署 VP（含 ${picked.length} 張 VC），綁定${verifiers[mode].name}的 challenge 與 domain。`
@@ -688,5 +631,5 @@ on("btnVpStatic", async () => {
   const vp = currentVp();
   if (!vp) return renderReport({ fails: ["請先產生並簽署一份 VP"], warns: [], passes: [], infos: [] }, $("vpStaticResult"));
   $("vpStaticResult").textContent = "驗證中…";
-  renderReport(await verifyVp(vp, { rpcUrl: $("inRpc").value.trim() || undefined }), $("vpStaticResult"));
+  renderReport(await VcEngine.verifyPresentation(vp, { rpcUrl: $("inRpc").value.trim() || undefined }), $("vpStaticResult"));
 });

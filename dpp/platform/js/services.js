@@ -6,7 +6,9 @@
    the only parts that touch a real blockchain.
    State lives in localStorage. Files the platform publishes (did.json, status lists) are served to the official
    did:web resolver through WEB.fetch, the same way test/test.js simulates hosting.
-   Signing and verification reuse ../js/vc.js, did-web.js and vp.js unchanged. */
+   Credentials are built, signed and checked through ../js/vc-engine.js (VcEngine); passports, GS1 paths, field
+   tiers and the role policy come from ../js/dpp-engine.js (DppEngine). The services here add storage, keys, trust
+   and the platform's own workflow on top. */
 "use strict";
 
 const V2_CONTEXT = "https://www.w3.org/ns/credentials/v2";
@@ -171,19 +173,23 @@ const Anchor = {
 const KMS = {
   handles: new Map(), // verificationMethod id → CryptoKey (sign only)
   keysOf(orgId) { return Object.values(Store.state.kms).filter((k) => k.orgId === orgId); },
-  activeKey(orgId) { return this.keysOf(orgId).find((k) => k.state === "active"); },
+  activeKey(orgId) { return VcEngine.keys.custodial.active(this.keysOf(orgId)); },
+  // Key records and their lifecycle come from the VC engine's custodial key service; the platform stores them
   async create(orgId) {
-    const org = Store.org(orgId);
-    const { privateKey, pub } = await generateEd25519(true);
-    const jwk = await crypto.subtle.exportKey("jwk", privateKey);
-    const id = `${org.did}#key-${this.keysOf(orgId).length + 1}`;
-    Store.state.kms[id] = { id, orgId, alg: "Ed25519", publicKeyMultibase: ed25519Multibase(pub), state: "active",
-      createdAt: nowIso(), sealed: { kty: jwk.kty, crv: jwk.crv, x: jwk.x, d: jwk.d } };
-    await this.unsealOne(Store.state.kms[id]);
-    return Store.state.kms[id];
+    const record = await VcEngine.keys.custodial.create(Store.org(orgId).did, this.keysOf(orgId));
+    Store.state.kms[record.id] = { ...record, orgId };
+    await this.unsealOne(Store.state.kms[record.id]);
+    return Store.state.kms[record.id];
+  },
+  // Rotation: the engine retires the active key (it stays in did.json) and creates its successor
+  async rotate(orgId) {
+    const { old, key } = await VcEngine.keys.custodial.rotate(Store.org(orgId).did, this.keysOf(orgId));
+    Store.state.kms[key.id] = { ...key, orgId };
+    await this.unsealOne(Store.state.kms[key.id]);
+    return { old, key: Store.state.kms[key.id] };
   },
   async unsealOne(k) {
-    this.handles.set(k.id, await crypto.subtle.importKey("jwk", { ...k.sealed }, ED25519, false, ["sign"]));
+    this.handles.set(k.id, await VcEngine.keys.custodial.unseal(k));
   },
   async unsealAll() {
     for (const k of Object.values(Store.state.kms)) if (k.state !== "revoked" && !this.handles.has(k.id)) await this.unsealOne(k);
@@ -191,17 +197,17 @@ const KMS = {
   signingKeys(orgId) {
     const org = Store.org(orgId), key = this.activeKey(orgId);
     if (!key) throw new Error(`${org.name} 沒有可用的簽章金鑰`);
-    return { did: org.did, cryptosuite: "eddsa-jcs-2022", privateKey: this.handles.get(key.id), verificationMethod: key.id };
+    return VcEngine.keys.custodial.signer(org.did, key, this.handles.get(key.id));
   },
 };
 
 const Signer = {
-  // Only the active key signs; the private key never leaves KMS (createProof gets a handle, not key bytes)
-  async sign(orgId, unsigned, options) {
+  // Only the active key signs; the private key never leaves KMS (the engine gets a handle, not key bytes)
+  async sign(orgId, unsigned, { challenge, domain } = {}) {
     const keys = KMS.signingKeys(orgId);
-    const proof = await createProof(unsigned, keys, undefined, options);
+    const signed = await VcEngine.issuance.sign(unsigned, keys, { challenge, domain });
     await Audit.append(orgId, "簽章", `${credType(unsigned)}（#${fragmentOf(keys.verificationMethod)}）`);
-    return { ...unsigned, proof };
+    return signed;
   },
 };
 
@@ -210,24 +216,14 @@ const DidService = {
   url(org) { return DID_METHODS["did:web:"].parse(org.did).url; },
   // Retired keys stay listed so credentials they signed keep verifying; revoked keys disappear
   document(org) {
-    const keys = KMS.keysOf(org.id).filter((k) => k.state !== "revoked");
-    const ids = keys.map((k) => k.id);
-    return {
-      "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/multikey/v1"],
-      id: org.did,
-      verificationMethod: keys.map((k) => ({ id: k.id, type: "Multikey", controller: org.did, publicKeyMultibase: k.publicKeyMultibase })),
-      authentication: ids,
-      assertionMethod: ids,
-      ...(org.kind === "root" && Store.state.anchorAccount ? { service: [{ id: `${org.did}#anchor-account`, type: "DppAnchorAccount",
-        serviceEndpoint: `eip155:${ETHR.chainId}:${Store.state.anchorAccount}` }] } : {}),
-    };
+    const service = org.kind === "root" && Store.state.anchorAccount ? [{ id: `${org.did}#anchor-account`, type: "DppAnchorAccount",
+      serviceEndpoint: `eip155:${ETHR.chainId}:${Store.state.anchorAccount}` }] : undefined;
+    return VcEngine.keys.custodial.didDocument(org.did, KMS.keysOf(org.id), { service });
   },
   publish(org) { Hosting.put(this.url(org), this.document(org)); },
   publishAll() { for (const o of Object.values(Store.state.orgs)) this.publish(o); },
   async rotate(orgId) {
-    const old = KMS.activeKey(orgId);
-    if (old) old.state = "retired";
-    const k = await KMS.create(orgId);
+    const { old, key: k } = await KMS.rotate(orgId); // custodial lifecycle: active → retired, still listed in did.json
     this.publish(Store.org(orgId));
     await Audit.append(orgId, "金鑰輪替", `#${fragmentOf(old?.id ?? "")} 退役，#${fragmentOf(k.id)} 啟用`);
     Store.save();
@@ -236,9 +232,7 @@ const DidService = {
   // Revoking a key removes it from did.json: everything it signed stops verifying (used after a key compromise)
   async revoke(keyId) {
     const k = Store.state.kms[keyId];
-    const wasActive = k.state === "active";
-    k.state = "revoked";
-    delete k.sealed;
+    const wasActive = VcEngine.keys.custodial.revoke(k);
     KMS.handles.delete(keyId);
     if (wasActive) await KMS.create(k.orgId);
     this.publish(Store.org(k.orgId));
@@ -480,19 +474,10 @@ const Issuance = {
 
 /* ---------- Catalog: models (GTIN) and items (serial) ---------- */
 const Catalog = {
-  // GS1 mod-10 check digit over the first 13 digits of a GTIN-14
-  checkDigit(body13) {
-    const sum = [...body13].reverse().reduce((s, d, i) => s + Number(d) * (i % 2 === 0 ? 3 : 1), 0);
-    return String((10 - (sum % 10)) % 10);
-  },
-  gtin14(input) {
-    let d = String(input).replace(/\D/g, "");
-    if (d.length === 13) d = "0" + d; // GTIN-13 → GTIN-14 keeps the same check digit
-    if (d.length !== 14) throw new Error("GTIN 應為 13 或 14 位數字");
-    if (this.checkDigit(d.slice(0, 13)) !== d[13]) throw new Error(`GTIN 檢查碼錯誤（應為 ${this.checkDigit(d.slice(0, 13))}）`);
-    return d;
-  },
-  upi(orgId, gtin, serial) { return `https://${Store.org(orgId).resolver}/01/${gtin}/21/${encodeURIComponent(serial)}`; },
+  // GS1 rules live in the DPP engine
+  checkDigit: (body13) => DppEngine.gs1.checkDigit(body13),
+  gtin14: (input) => DppEngine.gs1.gtin14(input),
+  upi(orgId, gtin, serial) { return DppEngine.gs1.link(Store.org(orgId).resolver, { gtin, serial }); },
   addModel(orgId, { gtin, name, category }) {
     const g = this.gtin14(gtin);
     if (Store.state.models[g]) throw new Error("這個 GTIN 已經存在");
@@ -519,36 +504,14 @@ const Catalog = {
 };
 
 /* ---------- Passport service ---------- */
-const TIERS = { public: "公開", restricted: "受限（維修、回收）", authority: "機關" };
-const CATEGORY_TEMPLATES = {
-  "電子產品": [
-    ["material", "主要材料", "鋁合金 62%、PC/ABS 21%、銅 9%、其他 8%", "", "public"],
-    ["recycled", "再生料比例", "18", "%", "public"],
-    ["carbon", "產品碳足跡", "41.6", "kg CO₂e", "public"],
-    ["repairability", "可修復性指數", "7.8", "/ 10", "public"],
-    ["warranty", "保固", "3", "年", "public"],
-    ["disassembly", "拆解步驟", "1. 移除底部 4 顆 T10 螺絲　2. 拆下風扇模組　3. 拔除主電源排線", "", "restricted"],
-    ["spareParts", "備品料號", "FAN-80-12V、PCB-PSU-650-R2", "", "restricted"],
-    ["hazard", "有害物質位置", "主電容（含電解液）位於主板右側", "", "restricted"],
-    ["conformity", "符合性聲明", "EU DoC 2026-0142（LVD、EMC、RoHS）", "", "authority"],
-  ],
-  "電池": [
-    ["chemistry", "電池化學", "鋰離子 NMC 811", "", "public"],
-    ["capacity", "額定容量", "10000", "mAh", "public"],
-    ["carbon", "產品碳足跡", "12.3", "kg CO₂e", "public"],
-    ["recycledCo", "再生鈷比例", "16", "%", "public"],
-    ["cycles", "預期循環壽命", "800", "次", "public"],
-    ["soh", "健康狀態量測方法", "依 IEC 62660-1 容量測試", "", "restricted"],
-    ["dismantling", "拆解與安全", "放電至 0% 後再拆，電芯以膠固定需加熱至 60°C", "", "restricted"],
-    ["dueDiligence", "供應鏈盡職調查報告", "DD-2026-PB10K（鈷、鋰、鎳）", "", "authority"],
-  ],
-};
+const TIERS = DppEngine.tiers;
+const CATEGORY_TEMPLATES = DppEngine.categories; // product groups and their fields (ESPR-style information requirements)
 
 const Passports = {
   create(upi) {
     const item = Store.state.items[upi], model = Store.state.models[item.gtin];
     const id = "pp-" + crypto.randomUUID().slice(0, 8);
-    const attrs = (CATEGORY_TEMPLATES[model.category] ?? []).map(([key, label, value, unit, tier]) => ({ key, label, value, unit, tier }));
+    const attrs = DppEngine.template(model.category);
     Store.state.passports[id] = { id, upi, state: "draft", versions: [], draft: { attributes: attrs, certIds: [] }, createdAt: nowIso() };
     return Store.state.passports[id];
   },
@@ -559,56 +522,30 @@ const Passports = {
     Store.save();
   },
   // The ISO certificate is linked by id plus an SRI digest of its JCS form, so a swapped certificate is detected
-  async certLink(vc) {
-    const digest = btoa(String.fromCharCode(...(await sha256(jcs(vc)))));
-    return { id: vc.id, mediaType: "application/vc", digestSRI: "sha256-" + digest };
-  },
+  certLink: (vc) => VcEngine.digestSRI(vc),
   async publish(id) {
     const p = Store.state.passports[id];
     const item = Store.state.items[p.upi], model = Store.state.models[item.gtin], org = Store.org(model.orgId);
-    if (!p.draft.attributes.some((a) => a.tier === "public" && a.value)) throw new Error("至少要有一個公開欄位");
+    const check = DppEngine.validate(model.category, p.draft.attributes);
+    if (!check.ok) throw new Error(check.problems.join("；"));
     const reg = await Registry.register(p.upi, org.id);
     const version = p.versions.length + 1;
-    const pick = (tier) => p.draft.attributes.filter((a) => a.tier === tier && a.value).map(({ key, label, value, unit }) => ({ key, label, value, ...(unit && { unit }) }));
-    const certs = p.draft.certIds.map((cid) => Store.state.credentials[cid]?.vc).filter(Boolean);
-    const vc = await Signer.sign(org.id, {
-      "@context": [V2_CONTEXT],
-      id: "urn:uuid:" + crypto.randomUUID(),
-      type: ["VerifiableCredential", "DigitalProductPassportCredential"],
+    const bundle = await DppEngine.buildPassport({
+      product: { upi: p.upi, gtin: item.gtin, serial: item.serial, name: model.name, category: model.category,
+        manufacturer: { id: org.did, name: org.name }, facility: item.facility, madeOn: item.madeOn },
+      attributes: p.draft.attributes,
       issuer: org.did,
-      validFrom: nowIso(),
-      credentialSubject: {
-        id: p.upi,
-        type: "Product",
-        gtin: item.gtin,
-        serialNumber: item.serial,
-        name: model.name,
-        category: model.category,
-        manufacturer: { id: org.did, name: org.name },
-        ...(item.facility && { facility: item.facility }),
-        ...(item.madeOn && { manufacturedOn: item.madeOn }),
-        registrationId: reg.registrationId,
-        passportVersion: version,
-        attributes: pick("public"),
-      },
-      ...(certs.length && { relatedResource: await Promise.all(certs.map((c) => this.certLink(c))) }),
-      credentialStatus: await StatusService.allocate(org.id, "revocation"),
+      version,
+      registrationId: reg.registrationId,
+      certificates: p.draft.certIds.map((cid) => Store.state.credentials[cid]?.vc).filter(Boolean),
+      status: () => StatusService.allocate(org.id, "revocation"),
     });
+    const signed = await DppEngine.signPassport(bundle, (doc) => Signer.sign(org.id, doc));
+    const vc = signed.passport;
     Issuance.record(vc, "passport", org.id, null, { upi: p.upi });
     // Restricted tiers are separate credentials, released only after the policy decision allows it
     const sections = {};
-    for (const tier of ["restricted", "authority"]) {
-      const attrs = pick(tier);
-      if (!attrs.length) continue;
-      const s = await Signer.sign(org.id, {
-        "@context": [V2_CONTEXT],
-        id: "urn:uuid:" + crypto.randomUUID(),
-        type: ["VerifiableCredential", "PassportRestrictedSection"],
-        issuer: org.did,
-        validFrom: nowIso(),
-        credentialSubject: { id: p.upi, tier, passport: vc.id, attributes: attrs },
-        credentialStatus: await StatusService.allocate(org.id, "revocation"),
-      });
+    for (const [tier, s] of Object.entries(signed.sections)) {
       Issuance.record(s, "section", org.id, null, { upi: p.upi, tier });
       sections[tier] = s.id;
     }
@@ -726,11 +663,7 @@ const Verify = {
 };
 
 /* ---------- Authorised access: OID4VP-style exchange + policy decision point ---------- */
-const POLICY = {
-  roles: { AuthorizedRepairerCredential: "repairer" },
-  tiers: { consumer: ["public"], repairer: ["public", "restricted"], authority: ["public", "restricted", "authority"] },
-  names: { consumer: "一般大眾", repairer: "授權維修商", authority: "主管機關" },
-};
+const POLICY = DppEngine.policy; // roles public / partner / government and the tiers each may read
 
 const Access = {
   verifier: new Verifier(PLATFORM_ORIGIN, { ttlMs: 120000 }),
@@ -746,7 +679,7 @@ const Access = {
     const r = await this.verifier.verify(vp);
     const steps = [{ label: "VP 簽章、nonce、受眾", ok: !r.fails.length, detail: r.fails[0] ?? "持有人簽章正確，challenge 第一次使用，受眾是本平台" }];
     if (r.fails.length) return { ok: false, steps, errors: r.errors.map((e) => e.name), report: r };
-    let role = "consumer";
+    let role = "public";
     for (const vc of vp.verifiableCredential) {
       const res = await Verify.credential(vc);
       const ok = res.verdict !== "invalid";
@@ -754,8 +687,8 @@ const Access = {
       if (ok && POLICY.roles[credType(vc)]) role = POLICY.roles[credType(vc)];
     }
     const tiers = POLICY.tiers[role];
-    steps.push({ label: "授權決策（PDP）", ok: role !== "consumer", detail: `角色：${POLICY.names[role]}；可讀：${tiers.map((t) => TIERS[t]).join("、")}` });
-    if (role === "consumer") return { ok: false, steps, errors: ["AccessDenied"] };
+    steps.push({ label: "授權決策（PDP）", ok: role !== "public", detail: `角色：${POLICY.names[role]}；可讀：${tiers.map((t) => TIERS[t]).join("、")}` });
+    if (role === "public") return { ok: false, steps, errors: ["AccessDenied"] };
     const p = Passports.ofItem(upi), v = Passports.latest(p);
     const sections = tiers.filter((t) => v?.sections?.[t]).map((t) => Store.state.credentials[v.sections[t]].vc);
     await Audit.append(Store.orgByDid(vp.holder)?.id ?? vp.holder, "讀取受限欄位", `${upi}（${tiers.filter((t) => t !== "public").join("、")}）`);
@@ -763,6 +696,19 @@ const Access = {
     return { ok: true, steps, role, sections };
   },
 };
+
+/* ---------- Event notifications (the architecture's Webhook layer): engine events, logged per platform ---------- */
+const Events = {
+  max: 200,
+  log() { return (Store.state.events ??= []); },
+  record(event) {
+    if (!Store.state) return;
+    const log = this.log();
+    log.push(event);
+    if (log.length > this.max) log.splice(0, log.length - this.max);
+  },
+};
+VcEngine.events.on((event) => Events.record(event));
 
 /* ---------- Boot ---------- */
 async function bootPlatform(onProgress = () => {}) {

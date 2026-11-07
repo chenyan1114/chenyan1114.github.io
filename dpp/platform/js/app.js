@@ -7,7 +7,7 @@ const NAV = {
   brand: [["#/home", "總覽"], ["#/products", "產品與護照"], ["#/certificates", "持有證書"], ["#/repairers", "授權維修商"], ["#/keys", "金鑰與 DID"], ["#/audit", "稽核紀錄"]],
   cb: [["#/home", "總覽"], ["#/issued", "證書管理"], ["#/issue", "簽發證書"], ["#/status", "狀態清單"], ["#/keys", "金鑰與 DID"], ["#/audit", "稽核紀錄"]],
   repairer: [["#/access", "查詢維修資訊"], ["#/wallet", "錢包"], ["#/keys", "金鑰與 DID"], ["#/audit", "稽核紀錄"]],
-  root: [["#/trust", "信任註冊處"], ["#/tenants", "租戶"], ["#/registry", "EU DPP 註冊處"], ["#/hosting", "託管檔案"], ["#/ledger", "稽核帳本"]],
+  root: [["#/trust", "信任註冊處"], ["#/tenants", "租戶"], ["#/registry", "EU DPP 註冊處"], ["#/hosting", "託管檔案"], ["#/ledger", "稽核帳本"], ["#/events", "事件通知"]],
 };
 const PUBLIC_NAV = [["#/scan", "公開掃碼頁"], ["#/verify", "驗證工具"]];
 const SWITCH_ORGS = ["fantech", "tqv", "repair", "platform"];
@@ -35,6 +35,7 @@ const ROUTES = [
   [/^#\/registry$/, pageRegistry, ["root"]],
   [/^#\/hosting$/, pageHosting, ["root"]],
   [/^#\/ledger$/, pageLedger, ["root"]],
+  [/^#\/events$/, pageEvents, ["root"]],
 ];
 // Actions that only change the DOM in place; re-rendering would throw away unsaved edits
 const LOCAL_ACTIONS = new Set(["addAttr", "delAttr", "vtSample"]);

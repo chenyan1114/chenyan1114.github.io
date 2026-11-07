@@ -276,15 +276,20 @@ function checkDid(r, did, label, soft = false) {
 }
 
 /* ✗ = violates VC Data Model v2.0 (or can't be verified); ⚠ = only differs from this demo's expectations.
-   form (optional) = the page's current form values and DIDs; mismatches are warnings only. */
-function verifyVc(vc, form) {
+   form (optional) = the page's current form values and DIDs; mismatches are warnings only.
+   profile "iso" adds this demo's ISO-certificate expectations (⚠ only); "generic" checks the VC 2.0 rules alone,
+   for other credential types such as product passports (credentialSubject.id may be any URL there). */
+function verifyVc(vc, form, { profile = "iso" } = {}) {
+  const iso = profile === "iso";
   const r = report();
   if (!isPlainObject(vc)) { r.fails.push("VC 不是一個 JSON 物件"); return r; }
   const V2 = "https://www.w3.org/ns/credentials/v2";
   r.check([].concat(vc["@context"])[0] === V2, "@context 第一項為 W3C v2", `@context 第一項必須是 ${V2}`);
   r.check([].concat(vc.type).includes("VerifiableCredential"), "type 含 VerifiableCredential", 'type 必須包含 "VerifiableCredential"');
-  r.soft([].concat(vc.type).includes("IsoCertificationCredential"), "type 含 IsoCertificationCredential",
-    'type 沒有 "IsoCertificationCredential"（本 demo 預期）');
+  if (iso) {
+    r.soft([].concat(vc.type).includes("IsoCertificationCredential"), "type 含 IsoCertificationCredential",
+      'type 沒有 "IsoCertificationCredential"（本 demo 預期）');
+  }
   if (vc.id !== undefined) {
     if (r.check(typeof vc.id === "string" && /^[a-z][a-z0-9+.-]*:\S+$/i.test(vc.id), "id 為 URL", "id 必須是 URL")) {
       r.soft(/^urn:uuid:[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(vc.id), "id 為 urn:uuid",
@@ -294,7 +299,14 @@ function verifyVc(vc, form) {
 
   const issuerOk = checkDid(r, vc.issuer, "issuer"); // the signature can only be checked if the issuer resolves
   const subj = vc.credentialSubject;
-  if (r.check(isPlainObject(subj), "有 credentialSubject", "缺 credentialSubject（v2 必填）")) {
+  if (!iso) {
+    const subjects = [].concat(subj ?? []);
+    if (r.check(subjects.length > 0 && subjects.every(isPlainObject), "有 credentialSubject", "缺 credentialSubject（v2 必填，物件或物件陣列）")) {
+      for (const sj of subjects) {
+        if (sj.id !== undefined) r.check(typeof sj.id === "string" && /^[a-z][a-z0-9+.-]*:\S+$/i.test(sj.id), `credentialSubject.id 為 URL（${sj.id}）`, "credentialSubject.id 必須是 URL");
+      }
+    }
+  } else if (r.check(isPlainObject(subj), "有 credentialSubject", "缺 credentialSubject（v2 必填）")) {
     const holderOk = checkDid(r, subj.id, "credentialSubject.id", true);
     if (issuerOk && holderOk) r.soft(vc.issuer !== subj.id, "issuer 與 holder 不同", "issuer 與 holder 相同（自簽）");
     for (const k of ["certificationStandard", "certificateNumber", "scope"]) {

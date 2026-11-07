@@ -51,6 +51,13 @@
   .banner { border: 2px solid #2563eb; border-radius: 12px; padding: 10px 14px; font-weight: 600; }
   #ledgerHistory { font-size: 0.9em; padding-left: 1.4em; }
   #statusPendingList { font-size: 0.9em; padding-left: 1.4em; }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 6px 0; }
+  label.inline input { width: auto; }
+  #dppHtml { width: 100%; height: 420px; border: 1px solid #8886; border-radius: 12px; background: #fff; }
+  .dppTable { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  .dppTable th, .dppTable td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #8883; vertical-align: top; }
+  .tier { font-size: 0.8rem; padding: 1px 8px; border-radius: 99px; background: #8882; white-space: nowrap; }
+  .tier.restricted { background: #f59e0b33; } .tier.authority { background: #dc262633; }
   #ledgerHistory li.mine { font-weight: 700; }
   #qrBox { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0; }
   #qrImg svg { width: 260px; height: 260px; display: block; border-radius: 8px; }
@@ -369,6 +376,70 @@
     </details>
   </div>
 
+  <div class="card" id="dppCard">
+    <h2>6. DPP 引擎：產品資料 → 數位產品護照</h2>
+    <p class="hint">企業系統的資料經過轉接器與欄位對應表，變成依 ESPR 分級的護照（公開／受限／機關），用第 2 卡的發證者簽成 VC；
+      resolver 再依查詢者的角色與 <code>Accept</code> 回傳 HTML 或 JSON。</p>
+    <div class="row">
+      <div>
+        <label for="dppAdapter">① 轉接器（策略模式接 ERP）</label>
+        <select id="dppAdapter"></select>
+      </div>
+      <div>
+        <label for="dppCategory">產品類別（資料裡沒有時使用）</label>
+        <select id="dppCategory"></select>
+      </div>
+    </div>
+    <label for="dppInput">ERP 匯出資料</label>
+    <textarea id="dppInput" rows="8" spellcheck="false"></textarea>
+    <label for="dppMapping">② 欄位對應表（來源欄位 → DPP 欄位，JSON；留空用轉接器預設）</label>
+    <textarea id="dppMapping" rows="2" spellcheck="false" placeholder='{"ZZ_CO2E_KG": "carbon"}'></textarea>
+    <p>
+      <button id="btnDppSample">載入範例</button>
+      <button id="btnDppMap" class="primary">① 轉換成 DPP</button>
+      <button id="btnDppIssue" class="primary">② 簽發護照</button>
+      <label class="inline"><input type="checkbox" id="dppLinkCert" checked> 引用第 3 卡簽好的 ISO 證書</label>
+    </p>
+    <p id="dppMsg" class="hint"></p>
+    <div id="dppFields"></div>
+    <details id="dppOut" hidden>
+      <summary>護照 VC（公開）與分級欄位 VC</summary>
+      <pre id="dppVc"></pre>
+    </details>
+    <div id="dppResolver" hidden>
+      <h3>③ Resolver：同一個 GS1 路徑，不同角色看到不同內容</h3>
+      <p class="hint" id="dppPath"></p>
+      <div class="row">
+        <div>
+          <label for="dppRole">查詢者角色</label>
+          <select id="dppRole"></select>
+        </div>
+        <div>
+          <label for="dppAccept">Accept（瀏覽器要 HTML，系統要 JSON）</label>
+          <select id="dppAccept">
+            <option value="text/html">text/html（人看）</option>
+            <option value="application/json">application/json（系統）</option>
+          </select>
+        </div>
+      </div>
+      <p><button id="btnDppResolve" class="primary">③ 查詢</button> <button id="btnDppVerify">🔍 驗證護照</button></p>
+      <p class="hint" id="dppResolveMeta"></p>
+      <iframe id="dppHtml" title="resolver 回傳的 HTML" sandbox="" hidden></iframe>
+      <pre id="dppJson" hidden></pre>
+      <div id="dppVerify"></div>
+    </div>
+    <details class="hint">
+      <summary>技術細節</summary>
+      <ul>
+        <li>引擎在 <code>js/dpp-engine.js</code>（<code>DppEngine</code>），簽名與驗證交給 <code>js/vc-engine.js</code>（<code>VcEngine</code>）；平台原型用的是同一套。</li>
+        <li>GS1 Digital Link：<code>/01/&lt;GTIN-14&gt;/21/&lt;序號&gt;</code> 是護照的查詢鍵，GTIN 會檢查 mod-10 檢查碼。</li>
+        <li>受限與機關欄位是另外的 VC（<code>PassportRestrictedSection</code>），只有角色夠的查詢者拿得到；
+          引用的 ISO 證書以 <code>relatedResource</code> 的 <code>digestSRI</code> 綁定，被換掉會驗出來。</li>
+        <li>這裡的角色是模擬的；平台原型的「查詢維修資訊」示範真正的流程：維修商用錢包出示授權 VP，平台驗證後才給受限欄位。</li>
+      </ul>
+    </details>
+  </div>
+
 <!-- ethers.js v6: secp256k1 / keccak256 / registry calls for did:ethr. If it fails to load (offline), did:key still works. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.17.0/ethers.umd.min.js"
         integrity="sha512-AtjhVooOwBRjcpe7YjaQI6VDIBYNqpPGbuhQi0RtmoWQDD9mf9tu4p2jGXLiSw0nhE1JBvOjAbQL43yrva6C2g=="
@@ -379,7 +450,7 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <!-- GitHub Pages lets browsers cache files for 10 minutes; old JS mixed with new HTML after a deploy breaks the page, so always fetch fresh JS -->
 <script>
-  for (const f of ["vc.js", "did-key.js", "did-web.js", "status.js", "did-ethr.js", "vc-ledger.js", "eas.js", "vp.js", "ui.js", "eudi.js"]) {
+  for (const f of ["vc.js", "did-key.js", "did-web.js", "status.js", "did-ethr.js", "vc-ledger.js", "eas.js", "vp.js", "vc-engine.js", "dpp-engine.js", "ui.js", "eudi.js", "dpp-ui.js"]) {
     const s = document.createElement("script");
     s.src = `./js/${f}?t=${Date.now()}`;
     s.async = false; // injected scripts are async by default; false keeps execution order

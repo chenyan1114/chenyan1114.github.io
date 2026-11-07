@@ -522,6 +522,20 @@ ACTIONS.anchor = async () => {
 };
 ACTIONS.anchorVerify = async () => { await recheckAnchors(); toast(UI.anchorCheck.ok ? "每個錨定都和本地帳本一致" : "有錨定對不上，見表格", UI.anchorCheck.ok ? "ok" : "bad"); };
 
+/* Event notifications: what a tenant's webhook would receive (the VC engine emits, the platform logs) */
+const EVENT_NAMES = { "credential.issued": "簽發憑證", "presentation.signed": "簽署 VP", "credential.verified": "驗證憑證", "status.changed": "狀態清單變更",
+  "status.recorded": "鏈上紀錄", "key.created": "建立金鑰", "key.rotated": "金鑰輪替", "key.revoked": "金鑰撤銷" };
+async function pageEvents() {
+  const rows = Events.log().slice().reverse();
+  const detail = (e) => [e.credentialType, e.verdict && `結果 ${e.verdict}`, e.keyId && `#${fragmentOf(e.keyId)}`, e.active && `→ #${fragmentOf(e.active)}`,
+    e.signer && orgName(e.signer), e.id && e.id.slice(0, 22) + "…"].filter(Boolean).join("　");
+  return html`
+    ${pageHead("事件通知（Webhook）", "VC 引擎每做一件事就發出事件：簽發、驗證、狀態變更、金鑰生命週期。正式版會依租戶設定的 webhook 網址推送（含簽章與重送）；這裡先列出平台收到的最近 200 筆。")}
+    <div class="table-wrap card flush"><table class="data"><thead><tr><th>時間</th><th>事件</th><th>內容</th></tr></thead><tbody>
+    ${rows.map((e) => html`<tr><td>${dateFmt(e.at)}</td><td>${chip("muted", EVENT_NAMES[e.type] ?? e.type)} ${mono(e.type)}</td><td class="wrap">${detail(e)}</td></tr>`)}
+    </tbody></table></div>`;
+}
+
 /* ---------- Public: scan list, passport page, verifier ---------- */
 async function pageScanList() {
   const items = Object.values(Store.state.items).filter((i) => Passports.ofItem(i.upi)?.state === "published");
