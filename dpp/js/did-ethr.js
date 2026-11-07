@@ -1,8 +1,8 @@
 /* did:ethr (Sepolia) + secp256k1 recoverable signatures.
    secp256k1 / keccak256 / EIP-55 come from ethers.js v6 (loaded from a CDN by index.html).
    DID resolution uses the official ethr-did-resolver, which rebuilds the DID document from ERC-1056 registry
-   events (delegates, revocations, owner changes). Registry writes (add / revoke a delegate) are sent through
-   the user's MetaMask, where the user confirms and pays gas. */
+   events (delegates, revocations, owner changes). Registry writes (add / revoke a delegate here, VC history in
+   vc-ledger.js) are sent through the user's MetaMask, where the user confirms and pays gas. */
 "use strict";
 
 const ETHR = {
@@ -22,6 +22,11 @@ const ETHR = {
     "function identityOwner(address identity) view returns (address)",
     "function addDelegate(address identity, bytes32 delegateType, address delegate, uint256 validity)",
     "function revokeDelegate(address identity, bytes32 delegateType, address delegate)",
+    "function setAttribute(address identity, bytes32 name, bytes value, uint256 validity)",
+    "function changed(address identity) view returns (uint256)",
+    "event DIDOwnerChanged(address indexed identity, address owner, uint256 previousChange)",
+    "event DIDDelegateChanged(address indexed identity, bytes32 delegateType, address delegate, uint256 validTo, uint256 previousChange)",
+    "event DIDAttributeChanged(address indexed identity, bytes32 name, bytes value, uint256 validTo, uint256 previousChange)",
   ],
   delegateType: "veriKey", // the resolver lists veriKey delegates under assertionMethod (may issue credentials)
   explorer: "https://sepolia.etherscan.io",

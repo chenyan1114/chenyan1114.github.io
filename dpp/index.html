@@ -49,6 +49,9 @@
   details { margin: 8px 0; }
   summary { cursor: pointer; }
   .banner { border: 2px solid #2563eb; border-radius: 12px; padding: 10px 14px; font-weight: 600; }
+  #ledgerHistory { font-size: 0.9em; padding-left: 1.4em; }
+  #statusPendingList { font-size: 0.9em; padding-left: 1.4em; }
+  #ledgerHistory li.mine { font-weight: 700; }
   #qrBox { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin: 8px 0; }
   #qrImg svg { width: 260px; height: 260px; display: block; border-radius: 8px; }
   #qrInfo { flex: 1; min-width: 220px; }
@@ -203,6 +206,11 @@
           尚未放上網站時，以本頁暫存的文件模擬並提醒。</li>
         <li>did:ethr → <code>ecdsa-secp256k1-recovery-jcs-demo</code>（教學用，非標準）：從簽名回推地址，
           再比對 DID 文件裡的 <code>#controller</code> 或 <code>#delegate-N</code>；連不上 RPC 時離線判定。</li>
+        <li>撤銷與暫停：did:web 發證的 VC 帶 <code>BitstringStatusListEntry</code>（W3C 標準）。清單是 131072 位元、GZIP 壓縮、base64url（<code>u</code> 開頭）；
+          驗證時檢查清單的簽章、發證者、用途，再看自己那一位。</li>
+        <li>鏈上歷程：用 MetaMask 發證的 VC 會帶 <code>credentialStatus</code>（類型 <code>EthrVcLedgerStatus2026</code>，教學用，非標準），
+          指向 issuer 在 ERC-1056 合約上的事件。每個事件以 <code>keccak256(VC id)</code> 對應這張 VC，簽發事件另含整份 VC 的 SHA-256；撤銷是終局，暫停可以恢復。
+          選 EAS 時類型是 <code>EasVcStatus2026</code>（同樣是教學用）：簽發 = attest，撤銷 = revoke；暫停 = 另一筆指向簽發的 attestation，恢復 = 撤銷那筆暫停。</li>
         <li>VC v2.0：<code>validFrom</code>／<code>validUntil</code> 取代 v1 的 <code>issuanceDate</code>／<code>expirationDate</code>，皆為選填的 ISO 8601 日期時間。</li>
         <li>驗證結果：✗ 違反 v2.0 規範或簽名不符；⚠ 只是本 demo 的預期（如 <code>urn:uuid</code>、ISO claims、與表單不同）。</li>
       </ul>
@@ -210,6 +218,43 @@
     <pre id="vcOut">按「生成 VC」開始，或上傳一份 VC 來驗證。</pre>
     <p id="vcCheck"></p>
     <div id="vcVerify"></div>
+    <details id="statusBox">
+      <summary>🚫 撤銷與暫停（W3C Bitstring Status List）</summary>
+      <p class="hint">用 did:web 發證時，VC 會帶兩個 <code>credentialStatus</code>，指向網站上的撤銷清單和暫停清單
+        （<code>https://網域/status/revocation.json</code>、<code>suspension.json</code>）。清單本身也是發證者簽的 VC，
+        13 萬多個位元裡一位代表一張 VC；驗證者下載整份清單自己查，發證者不知道誰在查哪一張。撤銷無法復原，暫停可以恢復。</p>
+      <p>
+        <button id="btnStatusRevoke">⛔ 撤銷這張</button>
+        <button id="btnStatusSuspend">⏸ 暫停</button>
+        <button id="btnStatusReinstate">▶ 恢復</button>
+      </p>
+      <p class="hint" id="statusMsg"></p>
+      <div id="statusPending" hidden>
+        <p class="hint">下面的清單已在本頁簽好、還沒放上網站。下載後放到網站 repo 的對應路徑並 push（或執行 <code>npm run publish-status -- 檔案</code>）；
+          GitHub Pages 最多快取 10 分鐘，之後其他人驗證才會看到新狀態。</p>
+        <ul id="statusPendingList"></ul>
+      </div>
+    </details>
+    <details id="ledgerBox">
+      <summary>⛓ VC 歷程上鏈（智能合約）</summary>
+      <p class="hint">用 MetaMask 發證（第 2 卡 B）時，可以把這張 VC 的簽發、暫停、恢復、撤銷寫進 Sepolia 上已部署的合約。紀錄只增不改、有區塊時間戳記，只有發證帳戶本人寫得進去；驗證時會讀回來。每一步都是一筆交易，需少量 Sepolia 測試幣。</p>
+      <p>
+        <label for="ledgerMode">記錄方式（在「生成 VC」之前選，會寫進 VC 的 <code>credentialStatus</code>）</label>
+        <select id="ledgerMode">
+          <option value="erc1056">ERC-1056 屬性事件（DID 合約，和金鑰授權在同一條時間線）</option>
+          <option value="eas">EAS attestation（通用存證合約，可在 easscan 查看）</option>
+        </select>
+      </p>
+      <p>
+        <button id="btnLedgerIssue">⛓ 登記簽發</button>
+        <button id="btnLedgerSuspend">⏸ 暫停</button>
+        <button id="btnLedgerReinstate">▶ 恢復</button>
+        <button id="btnLedgerRevoke">⛔ 撤銷這張</button>
+        <button id="btnLedgerHistory">📜 鏈上歷程</button>
+      </p>
+      <p class="hint" id="ledgerStatus"></p>
+      <ol id="ledgerHistory" hidden></ol>
+    </details>
     <input type="file" id="vcFileInput" accept=".json,application/json" hidden />
   </div>
 
@@ -285,6 +330,10 @@
           <div class="eudiQr" id="eudiRequestQr"></div>
         </section>
       </div>
+      <h3>已發出的證書</h3>
+      <p class="hint">每張證書在 Token Status List（IETF，EUDI 錢包用的狀態清單）上有一個位置；撤銷無法恢復，暫停可以恢復。錢包與驗證者會從後端的
+        <code>/status/iso-certificates</code> 讀到新狀態。</p>
+      <ul class="feed" id="eudiIssued"></ul>
       <div hidden><!-- OpenID4VP hidden for now -->
       <h3>即時結果</h3>
       <ul class="feed" id="eudiFeed"></ul>
@@ -330,7 +379,7 @@
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <!-- GitHub Pages lets browsers cache files for 10 minutes; old JS mixed with new HTML after a deploy breaks the page, so always fetch fresh JS -->
 <script>
-  for (const f of ["vc.js", "did-key.js", "did-web.js", "did-ethr.js", "vp.js", "ui.js", "eudi.js"]) {
+  for (const f of ["vc.js", "did-key.js", "did-web.js", "status.js", "did-ethr.js", "vc-ledger.js", "eas.js", "vp.js", "ui.js", "eudi.js"]) {
     const s = document.createElement("script");
     s.src = `./js/${f}?t=${Date.now()}`;
     s.async = false; // injected scripts are async by default; false keeps execution order

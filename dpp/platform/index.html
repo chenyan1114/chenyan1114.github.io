@@ -104,6 +104,8 @@ nav a[aria-current="page"] { background: #ffffff18; box-shadow: inset 3px 0 0 #4
 .alert.ok { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
 .alert.warn { border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 9%, var(--surface)); }
 .alert.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent); background: color-mix(in srgb, var(--bad) 8%, var(--surface)); }
+.sub-verify { margin: 10px 0 14px; }
+.sub-verify > p { margin: 0 0 6px; }
 .loading { color: var(--ink-2); font-size: 14px; }
 .booting { display: grid; place-items: center; min-height: 50vh; }
 
@@ -273,9 +275,13 @@ body.bare .view { max-width: 640px; margin: 0 auto; padding-top: 0; }
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.js"
         integrity="sha384-e9EFD6BGC90bkW9aDV5xbbBfzwN7G8YImHao2lfLVKV/hPB0E0go+H3I64h7oHtA"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<!-- ethers.js (same pinned build and SRI as the demo page): only the audit anchoring (EAS on Sepolia) needs it -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.17.0/ethers.umd.min.js"
+        integrity="sha512-AtjhVooOwBRjcpe7YjaQI6VDIBYNqpPGbuhQi0RtmoWQDD9mf9tu4p2jGXLiSw0nhE1JBvOjAbQL43yrva6C2g=="
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <!-- Shared crypto from the demo (../js), then the platform; fresh copies every load, as on the demo page -->
 <script>
-  for (const f of ["../js/vc.js", "../js/did-key.js", "../js/did-web.js", "../js/vp.js",
+  for (const f of ["../js/vc.js", "../js/did-key.js", "../js/did-web.js", "../js/status.js", "../js/did-ethr.js", "../js/vc-ledger.js", "../js/eas.js", "../js/vp.js",
                    "./js/services.js", "./js/seed.js", "./js/views.js", "./js/app.js"]) {
     const s = document.createElement("script");
     s.src = `${f}?t=${Date.now()}`;

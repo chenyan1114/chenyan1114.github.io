@@ -4,6 +4,7 @@
 
 const DID_METHODS = {}; // DID prefix → { name, generate(opts), parse(did), describe(info), resolve(did, opts) }
 const SUITES = {};      // cryptosuite name → { sigLen, fragment(did), note, sign(keys, hashData), verify(r, ctx) }
+const STATUS_METHODS = {}; // credentialStatus type → { check(r, vc, entry, ctx) }
 
 /* ---------- Encoding ---------- */
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -305,6 +306,11 @@ function verifyVc(vc, form) {
   if (vc.validFrom !== undefined) r.check(!isNaN(from), "validFrom 為合法時間", "validFrom 不是合法日期時間");
   if (vc.validUntil !== undefined) r.check(!isNaN(until), "validUntil 為合法時間", "validUntil 不是合法日期時間");
   if (!isNaN(from) && !isNaN(until)) r.check(until > from, "validUntil 晚於 validFrom", "validUntil 必須晚於 validFrom");
+  if (vc.credentialStatus !== undefined) {
+    const es = [].concat(vc.credentialStatus);
+    r.check(es.length > 0 && es.every((s) => isPlainObject(s) && typeof s.type === "string"),
+      "credentialStatus 每一項都有 type", "credentialStatus 每一項都必須是含 type 的物件");
+  }
 
   if (form && isPlainObject(subj)) {
     for (const [k, f] of [["certificationStandard", "standard"], ["certificateNumber", "number"], ["scope", "scope"]]) {
@@ -317,5 +323,18 @@ function verifyVc(vc, form) {
     if (form.holderDid && subj.id !== form.holderDid) r.warns.push("holder 不是頁面上目前的 DID");
   }
   r.infos.push("proof" in vc ? "含 proof：一併做密碼學驗證" : "無 proof：只驗結構，無法確認是誰簽發");
+  return r;
+}
+
+/* Revocation / suspension, through the handler registered for each credentialStatus type */
+async function verifyStatus(vc, ctx = {}) {
+  const r = report();
+  const entries = [].concat(vc?.credentialStatus ?? []);
+  if (!entries.length) r.infos.push("沒有 credentialStatus：發證者無法撤銷或暫停這張 VC");
+  for (const entry of entries) {
+    const m = STATUS_METHODS[entry?.type];
+    if (m) await m.check(r, vc, entry, ctx);
+    else r.warns.push(`不認得的 credentialStatus 類型 ${entry?.type}，無法確認是否已撤銷`);
+  }
   return r;
 }

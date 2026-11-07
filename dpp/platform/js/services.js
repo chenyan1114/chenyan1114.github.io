@@ -1,7 +1,9 @@
 /* Mock backend of the product-grade DPP platform. Each object stands for one service in the architecture plan:
    Store (PostgreSQL), Hosting (CDN), KMS + Signer (HSM), DidService, StatusService (Bitstring Status List),
    Trust (trust registry), Issuance, Catalog, Passports, Registry (EU DPP registry), Verify, Access (OID4VP-style
-   exchange + policy decision) and Audit (hash-chained ledger).
+   exchange + policy decision), Audit (hash-chained ledger), Anchor (the ledger's head, attested on Sepolia through
+   EAS) and StatusLedger (every status list version's digest, attested the same way). Anchor and StatusLedger are
+   the only parts that touch a real blockchain.
    State lives in localStorage. Files the platform publishes (did.json, status lists) are served to the official
    did:web resolver through WEB.fetch, the same way test/test.js simulates hosting.
    Signing and verification reuse ../js/vc.js, did-web.js and vp.js unchanged. */
@@ -31,7 +33,7 @@ const Store = {
   },
   fresh() {
     return { version: 1, createdAt: nowIso(), orgs: {}, kms: {}, trust: [], models: {}, items: {}, passports: {},
-      credentials: {}, statusLists: {}, registry: {}, audit: [], ui: { org: "fantech" } };
+      credentials: {}, statusLists: {}, registry: {}, audit: [], anchors: [], anchorAccount: null, listAnchors: {}, ui: { org: "fantech" } };
   },
   org(id) {
     const o = this.state.orgs[id];
@@ -68,15 +70,98 @@ const Audit = {
     entry.hash = toHex(await sha256(jcs(entry)));
     log.push(entry);
   },
-  // Recompute every hash; the first mismatch is where the ledger was altered
-  async verify() {
+  // Recompute every hash (up to entry upTo); the first mismatch is where the ledger was altered
+  async verify(upTo = Infinity) {
     let prev = "0".repeat(64);
     for (const e of Store.state.audit) {
+      if (e.seq > upTo) break;
       const { hash, ...body } = e;
       if (body.prevHash !== prev || toHex(await sha256(jcs(body))) !== hash) return { ok: false, brokenAt: e.seq };
       prev = hash;
     }
-    return { ok: true, count: Store.state.audit.length };
+    return { ok: true, count: Math.min(upTo, Store.state.audit.length) };
+  },
+  // What an insider with database access can do: recompute every hash from entry `index` on, so verify() passes again
+  async rehashFrom(index) {
+    const log = Store.state.audit;
+    for (let i = index; i < log.length; i++) {
+      const { hash, ...body } = log[i];
+      body.prevHash = log[i - 1]?.hash ?? "0".repeat(64);
+      log[i] = { ...body, hash: toHex(await sha256(jcs(body))) };
+    }
+  },
+};
+
+/* ---------- Anchor: the audit chain's head, attested on Sepolia through EAS (../js/eas.js) ---------- */
+// The hash chain alone can't stop the platform itself from rewriting history: edit an entry, recompute every later
+// hash (Audit.rehashFrom) and verify() passes again. A head attested on a public chain can't be recomputed, so the
+// rewrite shows. One transaction covers every entry up to that head, however many there are. The anchoring account
+// is published in the platform's did.json (service #anchor-account), so verifiers know whose attestations count.
+const Anchor = {
+  list() { return (Store.state.anchors ??= []); },
+  account() { return Store.state.anchorAccount ?? null; },
+  // What a verifier sees: the account published in the platform's did.json
+  publishedAccount() {
+    const root = Object.values(Store.state.orgs).find((o) => o.kind === "root");
+    const svc = root && Hosting.get(DidService.url(root))?.service?.find((x) => x.type === "DppAnchorAccount");
+    return svc ? String(svc.serviceEndpoint).split(":").pop() : null;
+  },
+  // The first anchoring transaction (audit or status lists) fixes the account; later ones must come from it
+  claim(wallet) {
+    const acct = this.account();
+    if (acct && acct.toLowerCase() !== wallet.address.toLowerCase()) throw new Error(`錨定帳戶是 ${acct}，請用這個帳戶連接 MetaMask`);
+  },
+  adopt(wallet) {
+    if (this.account()) return;
+    Store.state.anchorAccount = wallet.address;
+    DidService.publish(Object.values(Store.state.orgs).find((o) => o.kind === "root"));
+  },
+  head() { const e = Store.state.audit.at(-1); return e ? { seq: e.seq, hash: e.hash } : null; },
+  pending() { return Store.state.audit.length - (this.list().at(-1)?.seq ?? 0); },
+  async anchor(wallet) {
+    if (!(await Audit.verify()).ok) throw new Error("稽核帳本的雜湊鏈已經斷掉，不能把壞掉的鏈頭錨定上鏈");
+    this.claim(wallet);
+    const head = this.head();
+    if (this.list().at(-1)?.seq === head.seq) throw new Error(`第 ${head.seq} 筆已經錨定過，等有新的稽核紀錄再錨定`);
+    const reader = EAS.reader();
+    try { await easEnsureSchema(wallet, "anchor", reader); } finally { reader.close?.(); }
+    const res = await easAttest(wallet, "anchor", ["0x" + head.hash, head.seq]);
+    this.adopt(wallet);
+    this.list().push({ seq: head.seq, head: head.hash, uid: res.uid, tx: res.hash, block: res.block, at: nowIso() });
+    await Audit.append("platform", "錨定上鏈", `第 ${head.seq} 筆的鏈頭 ${head.hash.slice(0, 10)}… → EAS`);
+    Store.save();
+    return this.list().at(-1);
+  },
+  // Each anchor against the chain, then against the local ledger as it is now
+  async verify(rpcUrl) {
+    const reader = EAS.reader(rpcUrl);
+    const results = [];
+    try {
+      for (const a of this.list()) {
+        let att;
+        try {
+          att = await reader.attestation(a.uid);
+        } catch (err) {
+          results.push({ ...a, status: "warn", detail: `讀不到鏈上資料（${err.shortMessage || err.message}）` });
+          continue;
+        }
+        if (!att || att.schema !== easSchemaUid("anchor") || att.attester.toLowerCase() !== String(this.account()).toLowerCase()) {
+          results.push({ ...a, status: "fail", detail: "鏈上找不到這筆錨定，或它不是平台的錨定帳戶寫的" });
+          continue;
+        }
+        const [head, seq] = easDecode("anchor", att.data);
+        const n = Number(seq), entry = Store.state.audit[n - 1];
+        const chain = await Audit.verify(n);
+        const base = { ...a, seq: n, time: att.time };
+        if (!entry) results.push({ ...base, status: "fail", detail: `本地帳本少於 ${n} 筆：紀錄被刪掉了` });
+        else if (!chain.ok) results.push({ ...base, status: "fail", detail: `本地帳本第 ${chain.brokenAt} 筆被改過（雜湊鏈斷掉）` });
+        else if ("0x" + entry.hash !== head.toLowerCase()) results.push({ ...base, status: "fail", detail: `第 ${n} 筆的雜湊和鏈上錨定的不同：前面的紀錄被改過，而且整條鏈被重算過` });
+        else results.push({ ...base, status: "pass", detail: `第 1–${n} 筆和鏈上錨定一致` });
+      }
+    } finally {
+      reader.close?.();
+    }
+    return { results, ok: results.every((r) => r.status === "pass"), pending: this.pending() };
   },
 };
 
@@ -133,6 +218,8 @@ const DidService = {
       verificationMethod: keys.map((k) => ({ id: k.id, type: "Multikey", controller: org.did, publicKeyMultibase: k.publicKeyMultibase })),
       authentication: ids,
       assertionMethod: ids,
+      ...(org.kind === "root" && Store.state.anchorAccount ? { service: [{ id: `${org.did}#anchor-account`, type: "DppAnchorAccount",
+        serviceEndpoint: `eip155:${ETHR.chainId}:${Store.state.anchorAccount}` }] } : {}),
     };
   },
   publish(org) { Hosting.put(this.url(org), this.document(org)); },
@@ -169,7 +256,7 @@ const StatusService = {
   url(org, purpose) { return `https://status.dpp-platform.example/${org.id}/${purpose}`; },
   list(orgId, purpose) {
     const id = `${orgId}:${purpose}`;
-    return (Store.state.statusLists[id] ??= { id, orgId, purpose, url: this.url(Store.org(orgId), purpose), set: [], used: [], vc: null });
+    return (Store.state.statusLists[id] ??= { id, orgId, purpose, url: this.url(Store.org(orgId), purpose), set: [], used: [], vc: null, versions: [] });
   },
   // Random indexes, so neighbouring credentials can't be correlated by position
   async allocate(orgId, purpose) {
@@ -180,18 +267,9 @@ const StatusService = {
     if (!list.vc) await this.publish(list);
     return { id: `${list.url}#${idx}`, type: "BitstringStatusListEntry", statusPurpose: purpose, statusListIndex: String(idx), statusListCredential: list.url };
   },
-  // Index 0 is the left-most bit of the first byte; the list is GZIP-compressed and multibase base64url ("u") encoded
-  async encode(set) {
-    const bits = new Uint8Array(STATUS_BITS / 8);
-    for (const i of set) bits[i >> 3] |= 0x80 >> (i & 7);
-    const gz = new Uint8Array(await new Response(new Blob([bits]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer());
-    return "u" + base64urlEncode(gz);
-  },
-  async decode(encodedList) {
-    if (typeof encodedList !== "string" || !encodedList.startsWith("u")) throw new Error("encodedList 應為 u 開頭的 multibase base64url");
-    const raw = base64urlDecode(encodedList.slice(1));
-    return new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer());
-  },
+  // Shared with the demo page (../js/status.js): index 0 is the left-most bit; GZIP, then multibase base64url ("u")
+  encode: (set) => statusEncode(set, STATUS_BITS),
+  decode: (encodedList) => statusDecode(encodedList),
   async publish(list) {
     const org = Store.org(list.orgId);
     list.vc = await Signer.sign(list.orgId, {
@@ -202,6 +280,7 @@ const StatusService = {
       validFrom: nowIso(),
       credentialSubject: { id: list.url + "#list", type: "BitstringStatusList", statusPurpose: list.purpose, encodedList: await this.encode(list.set) },
     });
+    list.versions = [...(list.versions ?? []), list.vc].slice(-10); // older versions, for the rollback demo
     Hosting.put(list.url, list.vc);
   },
   publishAll() { for (const l of Object.values(Store.state.statusLists)) if (l.vc) Hosting.put(l.url, l.vc); },
@@ -214,6 +293,81 @@ const StatusService = {
     const idx = Number(entry.statusListIndex);
     list.set = on ? [...new Set([...list.set, idx])] : list.set.filter((i) => i !== idx);
     await this.publish(list);
+  },
+};
+
+/* ---------- StatusLedger: status list versions anchored on Sepolia (EAS), against rollback and split views ---------- */
+// A status list is a live document the platform serves. Its signature proves who wrote a version, not that it is the
+// latest one: a host could hand a verifier last week's list (before a revocation) or different lists to different
+// verifiers. Each version's digest is attested on chain (many lists in one transaction), and verification compares
+// the list it was given with the newest anchored version for that URL.
+const StatusLedger = {
+  digest: async (listVc) => "0x" + toHex(await sha256(jcs(listVc))),
+  anchored() { return (Store.state.listAnchors ??= {}); }, // url → [{ digest, uid, tx, block, at }], oldest first
+  async pending() {
+    const out = [];
+    for (const list of Object.values(Store.state.statusLists)) {
+      if (!list.vc) continue;
+      const digest = await this.digest(list.vc);
+      if (this.anchored()[list.url]?.at(-1)?.digest !== digest) out.push({ list, digest });
+    }
+    return out;
+  },
+  async anchor(wallet) {
+    Anchor.claim(wallet);
+    const pending = await this.pending();
+    if (!pending.length) throw new Error("所有狀態清單都已錨定到最新版本");
+    const reader = EAS.reader();
+    try { await easEnsureSchema(wallet, "statusList", reader); } finally { reader.close?.(); }
+    const res = await easMultiAttest(wallet, "statusList", pending.map((p) => [p.list.url, p.digest]));
+    Anchor.adopt(wallet);
+    pending.forEach((p, i) => (this.anchored()[p.list.url] ??= []).push({ digest: p.digest, uid: res.uids[i], tx: res.hash, block: res.block, at: nowIso() }));
+    this.cache = null;
+    await Audit.append("platform", "狀態清單錨定", `${pending.length} 份清單 → EAS（一筆交易）`);
+    Store.save();
+    return pending.length;
+  },
+  cache: null,           // { at, account, byUrl: Map(url → [{ digest, time, uid }]) } read from the chain, kept 20 s
+  seen: new Map(),       // attestation uid → attestation (they never change: the schema is not revocable)
+  async onChain(account, rpcUrl) {
+    if (this.cache && this.cache.account === account && Date.now() - this.cache.at < 20000) return this.cache.byUrl;
+    const reader = EAS.reader(rpcUrl);
+    try {
+      const byUrl = new Map();
+      for (const log of await reader.attested(account, easSchemaUid("statusList"), EAS.searchFrom)) {
+        if (!this.seen.has(log.uid)) this.seen.set(log.uid, await reader.attestation(log.uid));
+        const a = this.seen.get(log.uid);
+        if (!a || a.attester.toLowerCase() !== account.toLowerCase()) continue;
+        const [url, digest] = easDecode("statusList", a.data);
+        if (!byUrl.has(url)) byUrl.set(url, []);
+        byUrl.get(url).push({ digest: digest.toLowerCase(), time: a.time, uid: log.uid });
+      }
+      this.cache = { at: Date.now(), account, byUrl };
+      return byUrl;
+    } finally {
+      reader.close?.();
+    }
+  },
+  /* { status, detail } for one status list credential, or null when the platform publishes no anchoring account */
+  async check(listVc, rpcUrl) {
+    const account = Anchor.publishedAccount();
+    if (!account) return null;
+    let byUrl;
+    try {
+      byUrl = await this.onChain(account, rpcUrl);
+    } catch (err) {
+      return { status: "warn", detail: `讀不到鏈上錨定（${err.shortMessage || err.message}），無法確認清單沒被掉包` };
+    }
+    const versions = byUrl.get(listVc.id) ?? [];
+    if (!versions.length) return { status: "warn", detail: "這份狀態清單還沒錨定上鏈" };
+    const digest = await this.digest(listVc), latest = versions.at(-1);
+    const when = (v) => new Date(v.time * 1000).toLocaleString();
+    if (latest.digest === digest) return { status: "pass", detail: `與鏈上最新錨定一致（${when(latest)}）` };
+    if (versions.some((v) => v.digest === digest)) {
+      return { status: "fail", detail: `拿到的是舊版狀態清單，鏈上已有更新的版本（${when(latest)}）：可能是回滾攻擊` };
+    }
+    if (Date.parse(listVc.validFrom) / 1000 > latest.time) return { status: "warn", detail: "清單在最後一次錨定之後更新過，還沒錨定" };
+    return { status: "fail", detail: "這份狀態清單和鏈上錨定的任何版本都不同：可能被掉包" };
   },
 };
 
@@ -527,6 +681,7 @@ const Verify = {
       for (const e of entries) {
         const res = await this.statusEntry(vc, e);
         if (res.status !== "pass" && status !== "fail") { status = res.status; detail = res.detail; }
+        else if (status === "pass") detail = res.detail;
       }
       add("status", "沒有被撤銷或暫停", status, detail);
     }
@@ -558,11 +713,15 @@ const Verify = {
     const pr = await verifyProof(listVc);
     if (pr.fails.length) return { status: "fail", detail: "狀態清單本身的簽章無效：" + pr.fails[0] };
     if (listVc.issuer !== vc.issuer) return { status: "fail", detail: "狀態清單不是同一個發證者發布的" };
+    // Before trusting its bits: is this the version anchored on chain? (null = the platform anchors nothing)
+    const ledger = await StatusLedger.check(listVc);
+    if (ledger?.status === "fail") return ledger;
     const bits = await StatusService.decode(listVc.credentialSubject.encodedList);
     const i = Number(e.statusListIndex);
     const on = (bits[i >> 3] & (0x80 >> (i & 7))) !== 0;
-    if (!on) return { status: "pass", detail: "狀態清單查詢：有效" };
-    return { status: "fail", detail: e.statusPurpose === "suspension" ? "已被發證者暫停" : "已被發證者撤銷" };
+    if (on) return { status: "fail", detail: e.statusPurpose === "suspension" ? "已被發證者暫停" : "已被發證者撤銷" };
+    if (ledger?.status === "warn") return { status: "warn", detail: "狀態清單查詢：有效，但" + ledger.detail };
+    return { status: "pass", detail: "狀態清單查詢：有效" + (ledger ? `（${ledger.detail}）` : "") };
   },
 };
 

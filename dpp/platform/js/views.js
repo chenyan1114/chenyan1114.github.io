@@ -11,7 +11,7 @@ const html = (strings, ...vals) => raw(strings.reduce((out, s, i) => out + s + (
 
 const ACTIONS = {}; // data-act="name" → async (el, ev)
 const FORMS = {};   // data-form="name" → async (form, data)
-const UI = { access: null, tamper: null, verifyInput: "" }; // per-session page state
+const UI = { access: null, tamper: null, rewrite: null, anchorCheck: null, rollback: null, wallet: null, verifyInput: "" }; // per-session page state
 
 const me = () => Store.org(Store.state.ui.org);
 const dateFmt = (iso) => (iso ? new Date(iso).toLocaleString("zh-TW", { hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
@@ -116,7 +116,7 @@ async function pageAudit({ all = false } = {}) {
   return html`
     ${all ? "" : pageHead("稽核紀錄", "這個組織的所有寫入動作。完整帳本在平台營運的「稽核帳本」。")}
     <div class="table-wrap card flush"><table class="data"><thead><tr><th>#</th><th>時間</th>${all ? html`<th>執行者</th>` : ""}<th>動作</th><th>對象</th><th>雜湊</th></tr></thead><tbody>
-    ${rows.map((e) => html`<tr${UI.tamper?.seq === e.seq ? raw(' class="tampered"') : ""}><td class="num">${e.seq}</td><td>${dateFmt(e.at)}</td>${all ? html`<td>${Store.state.orgs[e.actor]?.name ?? e.actor}</td>` : ""}
+    ${rows.map((e) => html`<tr${(UI.tamper ?? UI.rewrite)?.seq === e.seq ? raw(' class="tampered"') : ""}><td class="num">${e.seq}</td><td>${dateFmt(e.at)}</td>${all ? html`<td>${Store.state.orgs[e.actor]?.name ?? e.actor}</td>` : ""}
       <td>${e.action}</td><td class="wrap">${e.target}</td><td>${mono(e.hash.slice(0, 10) + "…")}</td></tr>`)}
     </tbody></table></div>`;
 }
@@ -449,26 +449,78 @@ async function pageHosting() {
   const files = [...Hosting.files.entries()].sort(([a], [b]) => a.localeCompare(b));
   return html`
     ${pageHead("託管檔案（CDN）", "驗證需要的公開檔案。任何人都能下載，驗證時不必信任平台。")}
+    ${await statusLedgerCard()}
     ${files.map(([url, doc]) => html`<section class="card file"><div class="card-head"><h2 class="mono-h">${url}</h2>${chip("muted", url.includes("/status/") || url.includes("status.") ? "狀態清單" : "DID 文件")}</div>${jsonBlock(doc, "內容")}</section>`)}`;
 }
 
 async function pageLedger() {
   const v = await Audit.verify();
+  const demo = UI.tamper || UI.rewrite;
+  const head = pageHead("稽核帳本", "只能新增、不能修改：每一筆都包含前一筆的雜湊，改任何一筆，後面整條鏈都會對不上。",
+    demo ? html`<button class="btn" data-act="untamper">還原第 ${demo.seq} 筆</button>`
+      : html`<button class="btn" data-act="tamper">示範：偷偷改一筆</button><button class="btn" data-act="rewrite">示範：改一筆並重算整條鏈</button>`);
   return html`
-    ${pageHead("稽核帳本", "只能新增、不能修改：每一筆都包含前一筆的雜湊，改任何一筆，後面整條鏈都會對不上。",
-      UI.tamper ? html`<button class="btn" data-act="untamper">還原第 ${UI.tamper.seq} 筆</button>` : html`<button class="btn" data-act="tamper">示範：偷偷改一筆</button>`)}
-    <div class="alert ${v.ok ? "ok" : "bad"}">${v.ok ? `✓ 雜湊鏈完整，共 ${v.count} 筆。` : `✗ 雜湊鏈在第 ${v.brokenAt} 筆斷掉：這一筆被改過。`}</div>
+    ${head}
+    <div class="alert ${UI.rewrite ? "warn" : v.ok ? "ok" : "bad"}">${v.ok ? `✓ 雜湊鏈完整，共 ${v.count} 筆。` : `✗ 雜湊鏈在第 ${v.brokenAt} 筆斷掉：這一筆被改過。`}
+      ${UI.rewrite ? html`<br>⚠ 第 ${UI.rewrite.seq} 筆其實被改過，但後面的雜湊全部重算了，所以雜湊鏈本身看不出來。只有和鏈上的錨定比對才抓得到。` : ""}</div>
+    ${anchorCard()}
     ${await pageAudit({ all: true })}`;
 }
-ACTIONS.tamper = () => {
+
+function anchorCard() {
+  const anchors = Anchor.list(), check = UI.anchorCheck, acct = Anchor.account();
+  const resultOf = (a) => check?.results.find((r) => r.uid === a.uid);
+  const ext = (href, text) => html`<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
+  return html`<section class="card">
+    <div class="card-head"><h2>⚓ 區塊鏈錨定（EAS on Sepolia）</h2>
+      <div class="actions"><button type="button" class="btn" data-act="anchorVerify" ${anchors.length ? "" : "disabled"}>對照鏈上驗證</button>
+      <button type="button" class="btn primary" data-act="anchor">錨定目前鏈頭</button></div></div>
+    <p class="note">雜湊鏈抓得到「改了一筆卻沒重算」，但平台自己若改一筆再把後面的雜湊全部重算，鏈看起來仍然完整。
+      把最新一筆的雜湊（鏈頭）寫進以太坊測試網的 EAS 合約，之後就沒有人能再重算它：一筆交易保護到目前為止的所有紀錄。</p>
+    ${kv([["錨定帳戶", acct ? html`${mono(acct)}（公布在平台的 did.json，service #anchor-account）` : "第一次錨定時用 MetaMask 帳戶決定"],
+      ["尚未錨定", `${Anchor.pending()} 筆`],
+      check && ["上次驗證", check.ok ? "✓ 每個錨定都和本地帳本一致" : check.results.some((r) => r.status === "fail") ? "✗ 本地帳本和鏈上錨定對不上" : "⚠ 有錨定讀不到鏈上資料"]])}
+    ${anchors.length ? html`<div class="table-wrap"><table class="data"><thead><tr><th>錨定到第幾筆</th><th>鏈頭雜湊</th><th>時間</th><th>鏈上紀錄</th><th>驗證</th></tr></thead><tbody>
+      ${anchors.slice().reverse().map((a) => { const r = resultOf(a); return html`<tr><td class="num">${a.seq}</td><td>${mono(a.head.slice(0, 16) + "…")}</td><td>${dateFmt(a.at)}</td>
+        <td>${ext(`${ETHR.explorer}/tx/${a.tx}`, "交易")} · ${ext(easLink(a.uid), "attestation")}</td>
+        <td class="wrap">${r ? html`${chip(r.status)} ${r.detail}` : html`<span class="muted">尚未驗證</span>`}</td></tr>`; })}
+    </tbody></table></div>` : empty("還沒有錨定。按「錨定目前鏈頭」，用 MetaMask 送一筆 Sepolia 交易（需少量測試幣）。")}
+  </section>`;
+}
+
+const recheckAnchors = async () => { UI.anchorCheck = Anchor.list().length ? await Anchor.verify() : null; };
+ACTIONS.tamper = async () => {
   const e = Store.state.audit[Math.min(4, Store.state.audit.length - 1)];
   UI.tamper = { seq: e.seq, target: e.target };
   e.target += "（被改過）";
+  await recheckAnchors();
 };
-ACTIONS.untamper = () => {
-  Store.state.audit[UI.tamper.seq - 1].target = UI.tamper.target;
-  UI.tamper = null;
+ACTIONS.rewrite = async () => {
+  const i = Math.min(4, Store.state.audit.length - 1);
+  UI.rewrite = { seq: i + 1, audit: JSON.parse(JSON.stringify(Store.state.audit)) };
+  Store.state.audit[i].target += "（被改過）";
+  await Audit.rehashFrom(i);
+  await recheckAnchors();
 };
+ACTIONS.untamper = async () => {
+  if (UI.tamper) Store.state.audit[UI.tamper.seq - 1].target = UI.tamper.target;
+  if (UI.rewrite) Store.state.audit = UI.rewrite.audit;
+  UI.tamper = UI.rewrite = null;
+  if (UI.anchorCheck) await recheckAnchors();
+};
+ACTIONS.anchor = async () => {
+  if (UI.tamper || UI.rewrite) throw new Error("請先還原示範用的竄改，再錨定");
+  try {
+    UI.wallet ??= await connectEthrWallet();
+    toast("請在 MetaMask 確認交易，上鏈約需 10–30 秒…");
+    const a = await Anchor.anchor(UI.wallet);
+    toast(`已錨定到第 ${a.seq} 筆`);
+  } catch (e) {
+    throw new Error("錨定失敗：" + walletErrorMessage(e));
+  }
+  await recheckAnchors();
+};
+ACTIONS.anchorVerify = async () => { await recheckAnchors(); toast(UI.anchorCheck.ok ? "每個錨定都和本地帳本一致" : "有錨定對不上，見表格", UI.anchorCheck.ok ? "ok" : "bad"); };
 
 /* ---------- Public: scan list, passport page, verifier ---------- */
 async function pageScanList() {
@@ -523,6 +575,55 @@ FORMS.verifyTool = async (f, d) => {
   try { vc = JSON.parse(d.json); } catch { throw new Error("不是合法的 JSON"); }
   $id("vt-out").innerHTML = '<div class="loading">驗證中…</div>';
   $id("vt-out").innerHTML = verdictView(await Verify.credential(vc)).s;
+};
+
+/* Status lists anchored on chain: the platform serves them, so it also proves which version is current */
+async function statusLedgerCard() {
+  const lists = Object.values(Store.state.statusLists).filter((l) => l.vc);
+  const pending = new Set((await StatusLedger.pending()).map((p) => p.list.url));
+  const ext = (href, text) => html`<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
+  const rb = UI.rollback;
+  const canRollback = lists.some((l) => (l.versions ?? []).length >= 2);
+  const affected = rb ? Object.values(Store.state.credentials)
+    .filter((c) => [].concat(c.vc.credentialStatus ?? []).some((e) => e.statusListCredential === rb.url)).slice(0, 3) : [];
+  return html`<section class="card">
+    <div class="card-head"><h2>⛓ 狀態清單錨定（去中心化帳本：EAS on Sepolia）</h2>
+      <div class="actions">${rb ? html`<button type="button" class="btn" data-act="unrollback">還原最新清單</button>`
+        : html`<button type="button" class="btn" data-act="rollback" ${canRollback ? "" : "disabled"}>示範：回滾攻擊</button>`}
+      <button type="button" class="btn primary" data-act="anchorLists" ${pending.size && !rb ? "" : "disabled"}>錨定 ${pending.size} 份清單</button></div></div>
+    <p class="note">狀態清單的簽章只證明「是發證者寫的」，不證明「是最新版」。託管方可以拿撤銷前的舊清單給驗證者看（回滾），
+      或給不同的人看不同版本。每一版清單的雜湊都寫上鏈（多份清單合成一筆交易），驗證時比對拿到的清單和鏈上最新的版本。</p>
+    ${!canRollback ? html`<p class="note">要示範回滾：先到驗證機構「證書管理」暫停或撤銷一張證書，讓清單有舊版本，並在前後各錨定一次。</p>` : ""}
+    ${rb ? html`<div class="alert bad">⚠ 示範中：${mono(rb.url)} 現在提供的是舊版清單（${dateFmt(rb.oldFrom)}）。下面的驗證用的就是這份舊清單。</div>
+      ${affected.map((c) => html`<div class="sub-verify"><p><b>${c.vc.credentialSubject.certificateNumber ?? c.vc.credentialSubject.name ?? credType(c.vc)}</b></p>${verifySlot(c.vc.id, true)}</div>`)}` : ""}
+    <div class="table-wrap"><table class="data"><thead><tr><th>狀態清單</th><th>版本數</th><th>最後錨定</th><th>狀態</th></tr></thead><tbody>
+      ${lists.map((l) => { const last = StatusLedger.anchored()[l.url]?.at(-1); return html`<tr><td class="wrap">${mono(l.url.replace("https://", ""))}</td><td class="num">${(l.versions ?? []).length}</td>
+        <td>${last ? html`${dateFmt(last.at)} · ${ext(`${ETHR.explorer}/tx/${last.tx}`, "交易")} · ${ext(easLink(last.uid), "attestation")}` : html`<span class="muted">—</span>`}</td>
+        <td>${!last ? chip("muted", "未錨定") : pending.has(l.url) ? chip("warn", "已更新，未錨定") : chip("ok", "最新版已錨定")}</td></tr>`; })}
+    </tbody></table></div>
+  </section>`;
+}
+ACTIONS.anchorLists = async () => {
+  try {
+    UI.wallet ??= await connectEthrWallet();
+    toast("請在 MetaMask 確認交易，上鏈約需 10–30 秒…");
+    toast(`已錨定 ${await StatusLedger.anchor(UI.wallet)} 份狀態清單`);
+  } catch (e) {
+    throw new Error("錨定失敗：" + walletErrorMessage(e));
+  }
+};
+// Serve the previous version of a list (preferably one whose newest version is anchored), as a malicious host would
+ACTIONS.rollback = () => {
+  const lists = Object.values(Store.state.statusLists).filter((l) => (l.versions ?? []).length >= 2);
+  const list = lists.find((l) => StatusLedger.anchored()[l.url]?.length >= 2) ?? lists.find((l) => StatusLedger.anchored()[l.url]) ?? lists[0];
+  const old = list.versions.at(-2);
+  UI.rollback = { url: list.url, oldFrom: old.validFrom };
+  Hosting.put(list.url, old);
+};
+ACTIONS.unrollback = () => {
+  const list = Object.values(Store.state.statusLists).find((l) => l.url === UI.rollback.url);
+  Hosting.put(list.url, list.vc);
+  UI.rollback = null;
 };
 
 const KIND_NAMES = { root: "平台（信任根）", tao: "國家認證機構", cb: "驗證機構", brand: "品牌商", repairer: "維修商" };

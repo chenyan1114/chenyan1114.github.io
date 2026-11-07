@@ -64,7 +64,8 @@ async function render() {
   }
   if (!match) return go(homeOf(me()));
   if (match.kinds && !match.kinds.includes(me().kind)) return go(homeOf(me()));
-  if (UI.tamper && match.page !== pageLedger) ACTIONS.untamper(); // the tamper demo never outlives its page
+  if ((UI.tamper || UI.rewrite) && match.page !== pageLedger) ACTIONS.untamper(); // the tamper demo never outlives its page
+  if (UI.rollback && match.page !== pageHosting) ACTIONS.unrollback(); // nor does the rollback demo
   document.body.classList.toggle("bare", !!match.opts.bare);
   renderShell(hash);
   const view = $id("view");
@@ -146,7 +147,7 @@ function wireEvents() {
     KMS.handles.clear();
     Hosting.files.clear();
     UI.access = null;
-    UI.tamper = null;
+    UI.tamper = UI.rewrite = UI.anchorCheck = UI.rollback = null;
     await boot();
   });
   $id("menuToggle").addEventListener("click", () => document.body.classList.toggle("nav-open"));

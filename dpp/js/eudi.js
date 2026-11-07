@@ -2,7 +2,7 @@
    DOM wiring only; the protocols run on the server, this page shows two QR codes everyone can scan and a live feed. */
 "use strict";
 
-const eudi = { base: "", https: false, timer: null, shown: "" };
+const eudi = { base: "", https: false, timer: null, shown: "", shownIssued: "" };
 
 const eudiApi = async (path, body) => {
   const res = await fetch(eudi.base + path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
@@ -56,9 +56,39 @@ async function startEudiDemo() {
 
 const timeOf = (ms) => new Date(ms).toLocaleTimeString("zh-TW", { hour12: false });
 
+/* Issued credentials and their Token Status List entry: revoke (final), suspend, reinstate */
+const CRED_STATUS = { valid: ["pass", "有效"], suspended: ["warn", "暫停中"], revoked: ["err", "已撤銷"] };
+function renderIssued(issued) {
+  const rows = issued.filter((o) => o.status === "issued");
+  const list = $("eudiIssued");
+  list.replaceChildren();
+  if (!rows.length) list.innerHTML = '<li class="hint">還沒有人領證。</li>';
+  for (const { id, createdAt, credentialStatus } of rows) {
+    const li = document.createElement("li");
+    const [cls, label] = CRED_STATUS[credentialStatus] ?? ["", credentialStatus];
+    li.append(Object.assign(document.createElement("span"), { className: cls, textContent: `${timeOf(createdAt)}　${label}　` }));
+    const actions = credentialStatus === "revoked" ? []
+      : credentialStatus === "suspended" ? [["▶ 恢復", "valid"], ["⛔ 撤銷", "revoked"]]
+      : [["⏸ 暫停", "suspended"], ["⛔ 撤銷", "revoked"]];
+    for (const [text, status] of actions) {
+      const btn = Object.assign(document.createElement("button"), { textContent: text });
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try { await eudiApi(`/api/status/${id}`, { status }); } catch (e) { showStatus("eudiServerStatus", "err", "狀態變更失敗：" + e.message); }
+        eudi.shownIssued = "";
+        refreshFeed();
+      };
+      li.append(btn, " ");
+    }
+    list.append(li);
+  }
+}
+
 async function refreshFeed() {
   let feed;
   try { feed = await eudiApi("/api/feed"); } catch { return; } // keep the last view through brief network hiccups
+  const issuedKey = feed.issued.map((o) => o.id + o.status + o.credentialStatus).join();
+  if (issuedKey !== eudi.shownIssued) { eudi.shownIssued = issuedKey; renderIssued(feed.issued); }
   const key = feed.presented.map((p) => p.createdAt + p.status).join();
   if (key === eudi.shown) return; // re-render only when something new arrived, so opened rows stay open
   eudi.shown = key;
