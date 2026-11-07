@@ -62,6 +62,17 @@ nav a[aria-current="page"] { background: #ffffff18; box-shadow: inset 3px 0 0 #4
 .side-foot p { margin: 0; }
 .side-foot a { color: var(--side-2); }
 .side-foot .btn { color: var(--side-ink); border-color: #ffffff30; background: transparent; }
+/* Server mode (remote.js) vs the offline demo */
+.remote-only { display: none; }
+body.remote .remote-only { display: block; }
+body.remote .demo-only { display: none; }
+.account { margin: 4px 0 10px; padding: 10px 12px; border: 1px solid #ffffff25; border-radius: 8px; }
+.account p { margin: 0 0 4px; }
+.acct-org { font-weight: 600; }
+.acct-user { font-size: 12.5px; color: var(--side-2); }
+.account .btn { color: var(--side-ink); border-color: #ffffff30; background: transparent; margin-top: 4px; }
+.login { max-width: 420px; margin: 8vh auto; }
+.secret { font: 500 13px var(--mono); word-break: break-all; background: color-mix(in srgb, var(--accent) 10%, var(--surface)); padding: 10px 12px; border-radius: 8px; }
 .view { padding: 28px max(16px, env(safe-area-inset-right, 0px)) 64px max(16px, env(safe-area-inset-left, 0px)); padding-inline: clamp(16px, 3vw, 40px); max-width: 1240px; width: 100%; min-width: 0; }
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }
@@ -256,13 +267,17 @@ body.bare .view { max-width: 640px; margin: 0 auto; padding-top: 0; }
       <button type="button" id="menuToggle" class="menu-btn" aria-label="開關選單">☰</button>
     </div>
     <div class="side-body">
-      <label for="orgSwitch" class="nav-label">目前身分</label>
-      <select id="orgSwitch"></select>
+      <div class="demo-only">
+        <label for="orgSwitch" class="nav-label">目前身分</label>
+        <select id="orgSwitch"></select>
+      </div>
+      <div class="remote-only account" id="account"></div>
       <p class="org-did" id="orgDid"></p>
       <nav id="nav" aria-label="主選單"></nav>
       <div class="side-foot">
-        <p>示範環境：資料與金鑰只存在這台瀏覽器。</p>
-        <button type="button" id="btnReset" class="btn sm">重設示範資料</button>
+        <p class="demo-only">示範環境：資料與金鑰只存在這台瀏覽器。</p>
+        <p class="remote-only">資料存在平台伺服器；你只看得到自己組織的資料與公開資料。</p>
+        <button type="button" id="btnReset" class="btn sm demo-only">重設示範資料</button>
         <a href="../">回到課堂 demo</a>
       </div>
     </div>
@@ -282,7 +297,7 @@ body.bare .view { max-width: 640px; margin: 0 auto; padding-top: 0; }
 <!-- Shared crypto from the demo (../js), then the platform; fresh copies every load, as on the demo page -->
 <script>
   for (const f of ["../js/vc.js", "../js/did-key.js", "../js/did-web.js", "../js/status.js", "../js/did-ethr.js", "../js/vc-ledger.js", "../js/eas.js", "../js/vp.js", "../js/vc-engine.js", "../js/dpp-engine.js",
-                   "./js/services.js", "./js/seed.js", "./js/views.js", "./js/app.js"]) {
+                   "./js/services.js", "./js/seed.js", "./js/remote.js", "./js/views.js", "./js/app.js"]) {
     const s = document.createElement("script");
     s.src = `${f}?t=${Date.now()}`;
     s.async = false; // keep execution order

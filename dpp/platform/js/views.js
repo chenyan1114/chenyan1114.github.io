@@ -11,7 +11,7 @@ const html = (strings, ...vals) => raw(strings.reduce((out, s, i) => out + s + (
 
 const ACTIONS = {}; // data-act="name" → async (el, ev)
 const FORMS = {};   // data-form="name" → async (form, data)
-const UI = { access: null, tamper: null, rewrite: null, anchorCheck: null, rollback: null, wallet: null, verifyInput: "" }; // per-session page state
+const UI = { access: null, tamper: null, rewrite: null, anchorCheck: null, rollback: null, wallet: null, verifyInput: "", secret: null }; // per-session page state
 
 const me = () => Store.org(Store.state.ui.org);
 const dateFmt = (iso) => (iso ? new Date(iso).toLocaleString("zh-TW", { hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—");
@@ -19,6 +19,8 @@ const dayFmt = (iso) => (iso ? String(iso).slice(0, 10) : "—");
 const orgName = (did) => Store.orgByDid(did)?.name ?? did;
 const localUrl = (hash) => location.href.split("#")[0] + hash;
 const publicHash = (item) => `#/01/${item.gtin}/21/${encodeURIComponent(item.serial)}`;
+// What a label QR code encodes: the server's GS1 resolver in server mode (any phone can open it), else this page
+const labelUrl = (item) => (Remote.enabled ? location.origin + DppEngine.gs1.path({ gtin: item.gtin, serial: item.serial }) : localUrl(publicHash(item)));
 
 const CHIPS = {
   active: ["有效", "ok"], suspended: ["已暫停", "warn"], revoked: ["已撤銷", "bad"],
@@ -194,7 +196,7 @@ async function pageProductNew() {
       </form>
     </div>`;
 }
-FORMS.newModel = async (f, d) => { const m = Catalog.addModel(me().id, d); Store.save(); toast(`已建立型號 ${m.name}（GTIN ${m.gtin}）`); render(); };
+FORMS.newModel = async (f, d) => { const m = await Catalog.addModel(me().id, d); Store.save(); toast(`已建立型號 ${m.name}（GTIN ${m.gtin}）`); render(); };
 FORMS.newItem = async (f, d) => { const i = await Catalog.addItem(me().id, d); go(`#/passport/${Passports.ofItem(i.upi).id}`); toast("已建立單品與護照草稿"); };
 
 async function pagePassport({ id }) {
@@ -226,8 +228,10 @@ async function pagePassport({ id }) {
         <section class="card"><h2>識別碼</h2>
           ${kv([["唯一產品識別碼", mono(p.upi)], ["GTIN", mono(item.gtin)], ["序號", item.serial], ["EU 註冊識別碼", reg ? mono(reg.registrationId) : "發布時登記"], ["製造場址", item.facility || "—"], ["製造日期", item.madeOn || "—"]])}
         </section>
-        ${v ? html`<section class="card qr-card"><h2>產品標籤</h2><div class="qr">${qrSvg(localUrl(publicHash(item)))}</div>
-          <p class="note">正式標籤印的是 ${mono(p.upi)}。這個示範 QR 指向本頁的公開頁；資料存在這台瀏覽器裡，換一支手機掃會找不到，要等接上後端才行。</p></section>` : ""}
+        ${v ? html`<section class="card qr-card"><h2>產品標籤</h2><div class="qr">${qrSvg(labelUrl(item))}</div>
+          <p class="note">${Remote.enabled
+            ? html`這個 QR 指向平台伺服器的 GS1 resolver（${mono(labelUrl(item))}）：手機掃了拿到公開護照頁，系統拿到 JSON。伺服器要能從外面連到（例如 HTTPS tunnel）才掃得到。`
+            : html`正式標籤印的是 ${mono(p.upi)}。這個示範 QR 指向本頁的公開頁；資料存在這台瀏覽器裡，換一支手機掃會找不到，用伺服器版（npm run platform-server）才行。`}</p></section>` : ""}
         <section class="card"><h2>版本</h2>
           ${p.versions.length ? html`<ol class="versions">${p.versions.slice().reverse().map((ver) => html`<li><b>v${ver.version}</b><span class="muted">${dateFmt(ver.signedAt)}</span>
             ${jsonBlock(Store.state.credentials[ver.vcId].vc, "護照 VC")}${Object.entries(ver.sections).map(([t, sid]) => jsonBlock(Store.state.credentials[sid].vc, `${TIERS[t]}欄位 VC`))}</li>`)}</ol>` : empty("發布後，每個版本都會保留在這裡。")}
@@ -252,10 +256,10 @@ function readDraft(form) {
 }
 ACTIONS.addAttr = () => { const tb = $id("attrRows"); tb.insertAdjacentHTML("beforeend", attrRow({ label: "", value: "", unit: "", tier: "public" }, tb.children.length).s); tb.lastElementChild.querySelector("input").focus(); };
 ACTIONS.delAttr = (el) => el.closest("tr").remove();
-FORMS.draft = async (f) => { Passports.saveDraft(f.dataset.id, readDraft(f)); toast("草稿已儲存"); };
+FORMS.draft = async (f) => { await Passports.saveDraft(f.dataset.id, readDraft(f)); toast("草稿已儲存"); };
 ACTIONS.publish = async (el) => {
   const f = $id("draftForm");
-  if (f) Passports.saveDraft(el.dataset.id, readDraft(f));
+  if (f) await Passports.saveDraft(el.dataset.id, readDraft(f));
   const vc = await Passports.publish(el.dataset.id);
   toast(`已簽章並發布 v${vc.credentialSubject.passportVersion}`);
 };
@@ -389,7 +393,7 @@ async function pageAccess() {
 }
 const attrList = (attrs) => html`<dl class="attrs">${attrs.map((a) => html`<dt>${a.label}</dt><dd>${a.value}${a.unit ? html` <span class="unit">${a.unit}</span>` : ""}</dd>`)}</dl>`;
 ACTIONS.accItem = (el) => { UI.access = { upi: el.value, request: null, vp: null, result: null }; render(); };
-ACTIONS.accRequest = () => { UI.access.request = Access.request(); render(); };
+ACTIONS.accRequest = async () => { UI.access.request = await Access.request(); };
 ACTIONS.accPresent = async () => {
   const ids = [...document.querySelectorAll('input[name="accVc"]:checked')].map((c) => c.value);
   if (!ids.length) throw new Error("請至少選一張憑證");
@@ -449,6 +453,7 @@ async function pageHosting() {
   const files = [...Hosting.files.entries()].sort(([a], [b]) => a.localeCompare(b));
   return html`
     ${pageHead("託管檔案（CDN）", "驗證需要的公開檔案。任何人都能下載，驗證時不必信任平台。")}
+    ${Remote.enabled ? remoteNote("伺服器模式：回滾示範只在你的瀏覽器裡換成舊版清單、在瀏覽器驗證，伺服器提供的清單不變；錨定交易由你的 MetaMask 送出，伺服器逐筆到鏈上核對後才登記。") : ""}
     ${await statusLedgerCard()}
     ${files.map(([url, doc]) => html`<section class="card file"><div class="card-head"><h2 class="mono-h">${url}</h2>${chip("muted", url.includes("/status/") || url.includes("status.") ? "狀態清單" : "DID 文件")}</div>${jsonBlock(doc, "內容")}</section>`)}`;
 }
@@ -463,6 +468,7 @@ async function pageLedger() {
     ${head}
     <div class="alert ${UI.rewrite ? "warn" : v.ok ? "ok" : "bad"}">${v.ok ? `✓ 雜湊鏈完整，共 ${v.count} 筆。` : `✗ 雜湊鏈在第 ${v.brokenAt} 筆斷掉：這一筆被改過。`}
       ${UI.rewrite ? html`<br>⚠ 第 ${UI.rewrite.seq} 筆其實被改過，但後面的雜湊全部重算了，所以雜湊鏈本身看不出來。只有和鏈上的錨定比對才抓得到。` : ""}</div>
+    ${Remote.enabled ? remoteNote("伺服器模式：竄改示範只改你瀏覽器裡的帳本副本，伺服器上的資料不變；錨定交易由你的 MetaMask 送出，伺服器會到鏈上讀回這筆 attestation，確認雜湊和它自己的帳本一致才登記。") : ""}
     ${anchorCard()}
     ${await pageAudit({ all: true })}`;
 }
@@ -542,7 +548,7 @@ async function pageScanList() {
   return html`
     ${pageHead("公開掃碼頁", "模擬消費者掃產品上的 QR code。公開頁不需要登入。")}
     <div class="grid3">${items.map((i) => { const m = Store.state.models[i.gtin]; return html`<a class="card product-tile" href="${publicHash(i)}">
-      <div class="qr small">${qrSvg(localUrl(publicHash(i)))}</div><div><b>${m.name}</b><span class="muted">${i.serial} · ${m.category}</span></div></a>`; })}</div>`;
+      <div class="qr small">${qrSvg(labelUrl(i))}</div><div><b>${m.name}</b><span class="muted">${i.serial} · ${m.category}</span></div></a>`; })}</div>`;
 }
 
 async function pagePublic({ gtin, serial }) {
@@ -639,5 +645,95 @@ ACTIONS.unrollback = () => {
   Hosting.put(list.url, list.vc);
   UI.rollback = null;
 };
+
+/* ---------- Server mode: sign-in and settings ---------- */
+const ROLE_LABELS = { admin: "管理員", editor: "編輯", viewer: "檢視" };
+const remoteNote = (text) => html`<p class="note">${text}</p>`;
+
+async function pageLogin() {
+  if (!Remote.enabled) return html`${pageHead("登入", "離線示範版不需要登入：用左側的「目前身分」切換組織。")}`;
+  if (Remote.session) return html`${pageHead("已登入", `${Remote.session.org.name}（${ROLE_LABELS[Remote.session.role]}）`)}<p><a class="btn primary" href="${homeOf(me())}">進入主控台</a></p>`;
+  return html`
+    <div class="login card">
+      <h1>登入 DPP 信任平台</h1>
+      <p class="sub">用組織配發的帳號登入。示範帳號的密碼在伺服器的 <code>data/platform/demo-users.local.json</code>。</p>
+      <form class="form" data-form="login">
+        <label for="lg-email">Email</label><input id="lg-email" name="email" type="email" autocomplete="username" required>
+        <label for="lg-pw">密碼</label><input id="lg-pw" name="password" type="password" autocomplete="current-password" required>
+        <button class="btn primary">登入</button>
+      </form>
+      <p class="note">只想查產品？<a href="#/scan">公開掃碼頁</a>與<a href="#/verify">驗證工具</a>不需要登入。</p>
+    </div>`;
+}
+FORMS.login = async (f, d) => {
+  await Remote.login(d.email, d.password);
+  toast(`歡迎，${Remote.session.user?.name ?? Remote.session.org.name}`);
+  go(homeOf(me()));
+};
+ACTIONS.logout = async () => { await Remote.logout(); UI.secret = null; toast("已登出"); go("#/login"); };
+
+async function pageSettings() {
+  if (!Remote.enabled) return html`${pageHead("設定", "離線示範版沒有帳號與 API 金鑰；用 npm run platform-server 啟動伺服器版。")}`;
+  const s = Remote.session, admin = Remote.can("admin");
+  const [members, keys] = admin ? await Promise.all([Remote.api("GET", "/api/v1/members"), Remote.api("GET", "/api/v1/api-keys")]) : [[], []];
+  const secret = UI.secret;
+  UI.secret = null; // shown once
+  return html`
+    ${pageHead("設定", `${s.org.name} · ${s.org.did}`)}
+    ${secret ? html`<div class="alert warn"><b>${secret.title}</b>：只會顯示這一次，請現在複製保存。<p class="secret">${secret.value}</p></div>` : ""}
+    <div class="cols">
+      <section class="card"><h2>我的帳號</h2>
+        ${kv([["名稱", s.user?.name ?? "—"], ["Email", s.user?.email ?? "（API 金鑰）"], ["角色", ROLE_LABELS[s.role]]])}
+        ${s.via === "session" ? html`<form class="form" data-form="password">
+          <label for="pw-cur">目前密碼</label><input id="pw-cur" name="current" type="password" autocomplete="current-password" required>
+          <label for="pw-new">新密碼（至少 10 個字元）</label><input id="pw-new" name="next" type="password" autocomplete="new-password" minlength="10" required>
+          <button class="btn">修改密碼</button></form>` : ""}
+      </section>
+      <section class="card"><h2>角色能做什麼</h2>
+        ${kv([["檢視", "瀏覽本組織的資料"], ["編輯", "建立產品、編輯與發布護照、簽發與變更憑證、出示 VP"], ["管理員", "以上全部，再加上成員、API 金鑰、簽章金鑰的輪替與撤銷"]])}
+      </section>
+    </div>
+    ${admin ? html`
+    <section class="card"><h2>成員</h2>
+      <div class="table-wrap"><table class="data"><thead><tr><th>名稱</th><th>Email</th><th>角色</th><th>建立時間</th><th></th></tr></thead><tbody>
+      ${members.map((m) => html`<tr><td>${m.name}</td><td>${mono(m.email)}</td><td>${chip("muted", ROLE_LABELS[m.role])}</td><td>${dateFmt(m.createdAt)}</td>
+        <td class="right">${m.email !== s.user?.email ? dangerBtn("removeMember", "移除", "確定移除？", { email: m.email }) : html`<span class="muted">你</span>`}</td></tr>`)}
+      </tbody></table></div>
+      <form class="form inline-form" data-form="addMember">
+        <label for="mb-name">名稱</label><input id="mb-name" name="name" required>
+        <label for="mb-email">Email</label><input id="mb-email" name="email" type="email" required>
+        <label for="mb-role">角色</label><select id="mb-role" name="role">${Object.entries(ROLE_LABELS).map(([k, v]) => html`<option value="${k}" ${k === "editor" ? "selected" : ""}>${v}</option>`)}</select>
+        <button class="btn primary">新增成員</button>
+      </form>
+    </section>
+    <section class="card"><h2>API 金鑰（系統對接）</h2>
+      <p class="note">ERP 或其他系統用 <code>Authorization: Bearer &lt;金鑰&gt;</code> 呼叫 API，權限等同「編輯」。說明文件：<a href="/api/v1/openapi.json" target="_blank" rel="noopener">OpenAPI</a>。</p>
+      <div class="table-wrap"><table class="data"><thead><tr><th>名稱</th><th>前綴</th><th>建立</th><th>最後使用</th><th>狀態</th><th></th></tr></thead><tbody>
+      ${keys.map((k) => html`<tr><td>${k.label}</td><td>${mono(k.prefix)}</td><td>${dateFmt(k.createdAt)}</td><td>${dateFmt(k.lastUsedAt)}</td>
+        <td>${k.revokedAt ? chip("revoked") : chip("active")}</td><td class="right">${k.revokedAt ? "" : dangerBtn("revokeApiKey", "撤銷", "確定撤銷？使用它的系統會立刻失效", { id: k.id })}</td></tr>`)}
+      </tbody></table></div>
+      <form class="form inline-form" data-form="addKey">
+        <label for="ak-label">名稱</label><input id="ak-label" name="label" placeholder="例：SAP 正式環境" required>
+        <button class="btn primary">建立 API 金鑰</button>
+      </form>
+    </section>` : html`<p class="note">成員與 API 金鑰由組織的管理員管理。</p>`}`;
+}
+FORMS.password = async (f, d) => {
+  await Remote.api("POST", "/api/v1/session/password", { current: d.current, next: d.next });
+  toast("密碼已更新；其他裝置上的登入已登出");
+  f.reset();
+};
+FORMS.addMember = async (f, d) => {
+  const r = await Remote.api("POST", "/api/v1/members", d);
+  UI.secret = { title: `${r.member.email} 的初始密碼`, value: r.password };
+  render();
+};
+ACTIONS.removeMember = async (el) => { await Remote.api("DELETE", `/api/v1/members/${encodeURIComponent(el.dataset.email)}`); toast("已移除成員"); };
+FORMS.addKey = async (f, d) => {
+  const r = await Remote.api("POST", "/api/v1/api-keys", { label: d.label });
+  UI.secret = { title: `API 金鑰「${r.apiKey.label}」`, value: r.key };
+  render();
+};
+ACTIONS.revokeApiKey = async (el) => { await Remote.api("DELETE", `/api/v1/api-keys/${el.dataset.id}`); toast("API 金鑰已撤銷"); };
 
 const KIND_NAMES = { root: "平台（信任根）", tao: "國家認證機構", cb: "驗證機構", brand: "品牌商", repairer: "維修商" };

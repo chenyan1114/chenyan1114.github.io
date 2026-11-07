@@ -94,6 +94,18 @@ const Audit = {
   },
 };
 
+/* One attestation read back from the chain (Sepolia through EAS.reader, swappable in tests) */
+async function readAttestation(uid) {
+  const reader = EAS.reader();
+  try {
+    const att = await reader.attestation(uid);
+    if (!att) throw new Error("鏈上找不到這筆 attestation（交易可能還沒確認，稍後再試）");
+    return att;
+  } finally {
+    reader.close?.();
+  }
+}
+
 /* ---------- Anchor: the audit chain's head, attested on Sepolia through EAS (../js/eas.js) ---------- */
 // The hash chain alone can't stop the platform itself from rewriting history: edit an entry, recompute every later
 // hash (Audit.rehashFrom) and verify() passes again. A head attested on a public chain can't be recomputed, so the
@@ -131,6 +143,23 @@ const Anchor = {
     this.adopt(wallet);
     this.list().push({ seq: head.seq, head: head.hash, uid: res.uid, tx: res.hash, block: res.block, at: nowIso() });
     await Audit.append("platform", "錨定上鏈", `第 ${head.seq} 筆的鏈頭 ${head.hash.slice(0, 10)}… → EAS`);
+    Store.save();
+    return this.list().at(-1);
+  },
+  /* Server mode: a browser wallet already sent the attestation; read it back from the chain and record it only if
+     it is an anchor schema attestation by the anchoring account whose hash equals this platform's ledger entry */
+  async accept(uid, { tx, block } = {}) {
+    if (this.list().some((a) => a.uid === uid)) throw new Error("這筆錨定已經登記過");
+    const att = await readAttestation(uid);
+    if (att.schema !== easSchemaUid("anchor")) throw new Error("這筆 attestation 不是稽核錨定的 schema");
+    const acct = this.account();
+    if (acct && acct.toLowerCase() !== att.attester.toLowerCase()) throw new Error(`錨定帳戶是 ${acct}，這筆是 ${att.attester} 寫的`);
+    const [head, seq] = easDecode("anchor", att.data);
+    const n = Number(seq), entry = Store.state.audit[n - 1], chain = await Audit.verify(n);
+    if (!entry || !chain.ok || "0x" + entry.hash !== head.toLowerCase()) throw new Error(`鏈上錨定的雜湊和平台帳本第 ${n} 筆不同，拒絕登記`);
+    this.adopt({ address: att.attester });
+    this.list().push({ seq: n, head: entry.hash, uid, tx: tx ?? null, block: block ?? null, at: nowIso() });
+    await Audit.append("platform", "錨定上鏈", `第 ${n} 筆的鏈頭 ${entry.hash.slice(0, 10)}… → EAS`);
     Store.save();
     return this.list().at(-1);
   },
@@ -320,6 +349,33 @@ const StatusLedger = {
     await Audit.append("platform", "狀態清單錨定", `${pending.length} 份清單 → EAS（一筆交易）`);
     Store.save();
     return pending.length;
+  },
+  /* Server mode: the browser wallet attested several lists in one transaction; check each attestation on chain:
+     status list schema, by the anchoring account, and a digest that matches a version this platform published */
+  async accept(uids, { tx, block } = {}) {
+    if (!Array.isArray(uids) || !uids.length) throw new Error("需要 attestation uid 清單");
+    const accepted = [];
+    for (const uid of uids) {
+      if (Object.values(this.anchored()).flat().some((a) => a.uid === uid)) throw new Error(`attestation ${uid.slice(0, 10)}… 已經登記過`);
+      const att = await readAttestation(uid);
+      if (att.schema !== easSchemaUid("statusList")) throw new Error("這筆 attestation 不是狀態清單錨定的 schema");
+      const acct = Anchor.account();
+      if (acct && acct.toLowerCase() !== att.attester.toLowerCase()) throw new Error(`錨定帳戶是 ${acct}，這筆是 ${att.attester} 寫的`);
+      const [url, digest] = easDecode("statusList", att.data);
+      const list = Object.values(Store.state.statusLists).find((l) => l.url === url);
+      if (!list) throw new Error(`平台沒有這份狀態清單：${url}`);
+      const versions = [...(list.versions ?? []), list.vc].filter(Boolean);
+      let known = false;
+      for (const v of versions) if ((await this.digest(v)) === digest.toLowerCase()) known = true;
+      if (!known) throw new Error(`錨定的雜湊不是平台發布過的任何一版 ${url}`);
+      Anchor.adopt({ address: att.attester });
+      accepted.push({ url, entry: { digest: digest.toLowerCase(), uid, tx: tx ?? null, block: block ?? null, at: nowIso() } });
+    }
+    for (const a of accepted) (this.anchored()[a.url] ??= []).push(a.entry);
+    this.cache = null;
+    await Audit.append("platform", "狀態清單錨定", `${accepted.length} 份清單 → EAS（一筆交易）`);
+    Store.save();
+    return accepted.length;
   },
   cache: null,           // { at, account, byUrl: Map(url → [{ digest, time, uid }]) } read from the chain, kept 20 s
   seen: new Map(),       // attestation uid → attestation (they never change: the schema is not revocable)

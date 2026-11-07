@@ -1,4 +1,7 @@
-/* App shell: hash router, role-based navigation, event delegation, toasts, boot. */
+/* App shell: hash router, role-based navigation, event delegation, toasts, boot.
+   Two modes: the offline demo (services in this browser, an organisation switcher) and server mode (remote.js:
+   the platform backend holds the data; people sign in, see only their organisation, and their role decides what
+   they may change). */
 "use strict";
 
 const $id = (id) => document.getElementById(id);
@@ -36,34 +39,49 @@ const ROUTES = [
   [/^#\/hosting$/, pageHosting, ["root"]],
   [/^#\/ledger$/, pageLedger, ["root"]],
   [/^#\/events$/, pageEvents, ["root"]],
+  [/^#\/login$/, pageLogin, null],
+  [/^#\/settings$/, pageSettings, ["brand", "cb", "repairer", "root", "tao"]],
 ];
 // Actions that only change the DOM in place; re-rendering would throw away unsaved edits
 const LOCAL_ACTIONS = new Set(["addAttr", "delAttr", "vtSample"]);
 
 const go = (hash) => { if (location.hash === hash) render(); else location.hash = hash; };
-const homeOf = (org) => NAV[org.kind][0][0];
+const homeOf = (org) => (org ? (NAV[org.kind] ?? [["#/settings"]])[0][0] : "#/scan");
+const signedIn = () => !Remote.enabled || !!Remote.session;
+const meOrNull = () => (signedIn() && Store.state.ui.org ? me() : null);
 
 function renderShell(current) {
-  const org = me();
-  $id("orgSwitch").innerHTML = SWITCH_ORGS.map((id) => {
-    const o = Store.state.orgs[id];
-    return `<option value="${id}" ${id === org.id ? "selected" : ""}>${escHtml(o.name)}（${KIND_NAMES[o.kind]}）</option>`;
-  }).join("");
+  const org = meOrNull();
   const link = ([href, label]) => `<li><a href="${href}" ${current.startsWith(href) ? 'aria-current="page"' : ""}>${label}</a></li>`;
-  $id("nav").innerHTML = `<ul>${NAV[org.kind].map(link).join("")}</ul><p class="nav-label">公開頁面</p><ul>${PUBLIC_NAV.map(link).join("")}</ul>`;
-  $id("orgDid").textContent = org.did;
+  const own = org ? [...(NAV[org.kind] ?? []), ...(Remote.enabled ? [["#/settings", "設定"]] : [])] : [];
+  $id("nav").innerHTML = (own.length ? `<ul>${own.map(link).join("")}</ul>` : "") + `<p class="nav-label">公開頁面</p><ul>${PUBLIC_NAV.map(link).join("")}</ul>`;
+  $id("orgDid").textContent = org?.did ?? "";
+  if (!Remote.enabled) {
+    $id("orgSwitch").innerHTML = SWITCH_ORGS.map((id) => {
+      const o = Store.state.orgs[id];
+      return `<option value="${id}" ${id === org.id ? "selected" : ""}>${escHtml(o.name)}（${KIND_NAMES[o.kind]}）</option>`;
+    }).join("");
+    return;
+  }
+  // Server mode: who is signed in, instead of the organisation switcher
+  const s = Remote.session;
+  $id("account").innerHTML = s
+    ? html`<p class="acct-org">${s.org.name}</p><p class="acct-user">${s.user?.name ?? "API 金鑰"} · ${ROLE_LABELS[s.role] ?? s.role}</p>
+      <button type="button" class="btn sm" data-act="logout">登出</button>`.s
+    : html`<p class="acct-user">尚未登入：只看得到公開資料</p><a class="btn sm" href="#/login">登入</a>`.s;
 }
 
 let renderSeq = 0;
 async function render() {
   const seq = ++renderSeq;
-  const hash = location.hash || homeOf(me());
+  const hash = location.hash || homeOf(meOrNull());
   let match = null;
   for (const [re, page, kinds, opts = {}] of ROUTES) {
     const m = re.exec(hash);
     if (m) { match = { page, kinds, opts, params: m.groups ?? {} }; break; }
   }
-  if (!match) return go(homeOf(me()));
+  if (!match) return go(homeOf(meOrNull()));
+  if (match.kinds && !meOrNull()) return go(Remote.enabled ? "#/login" : homeOf(null)); // signed-in pages need a session
   if (match.kinds && !match.kinds.includes(me().kind)) return go(homeOf(me()));
   if ((UI.tamper || UI.rewrite) && match.page !== pageLedger) ACTIONS.untamper(); // the tamper demo never outlives its page
   if (UI.rollback && match.page !== pageHosting) ACTIONS.unrollback(); // nor does the rollback demo
@@ -74,6 +92,9 @@ async function render() {
     const out = await match.page(match.params);
     if (seq !== renderSeq) return; // a newer navigation won
     view.innerHTML = out.s;
+    if (Remote.enabled && Remote.session?.role === "viewer" && match.kinds) {
+      view.insertAdjacentHTML("afterbegin", '<div class="alert warn">你的角色是「檢視」：可以瀏覽，修改資料需要編輯或管理員。</div>');
+    }
     await hydrateVerify(view);
   } catch (e) {
     console.error(e);
@@ -106,7 +127,7 @@ async function runHandler(fn, el, after) {
 function wireEvents() {
   document.addEventListener("click", (ev) => {
     const as = ev.target.closest("[data-as]");
-    if (as) { Store.state.ui.org = as.dataset.as; UI.access = null; Store.save(); }
+    if (as && !Remote.enabled) { Store.state.ui.org = as.dataset.as; UI.access = null; Store.save(); }
     const el = ev.target.closest("[data-act]");
     if (!el || el.disabled || !ACTIONS[el.dataset.act]) return;
     ev.preventDefault();
@@ -159,7 +180,12 @@ function wireEvents() {
 async function boot() {
   $id("view").innerHTML = '<div class="booting"><p class="loading" id="bootMsg">載入平台資料…</p></div>';
   try {
-    await bootPlatform((msg) => { const m = $id("bootMsg"); if (m) m.textContent = msg + "…"; });
+    if (await Remote.detect()) {
+      await Remote.boot();
+      document.body.classList.add("remote");
+    } else {
+      await bootPlatform((msg) => { const m = $id("bootMsg"); if (m) m.textContent = msg + "…"; });
+    }
   } catch (e) {
     console.error(e);
     $id("view").innerHTML = html`<div class="alert bad">平台無法啟動：${e.message}。這個頁面需要支援 Ed25519 的瀏覽器（Chrome 137+、Firefox 129+、Safari 17+）。</div>`.s;
