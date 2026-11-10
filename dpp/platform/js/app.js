@@ -63,12 +63,16 @@ function renderShell(current) {
     }).join("");
     return;
   }
-  // Server mode: who is signed in, instead of the organisation switcher
+  // Server mode: who is signed in, instead of the organisation switcher. On a local demo server the server also
+  // offers password-less switching between the demo accounts; it refuses that for anything but a direct local request.
   const s = Remote.session;
-  $id("account").innerHTML = s
+  const demo = Remote.demoAccounts?.length ? html`<label for="demoSwitch" class="nav-label">目前身分（本機示範）</label>
+    <select id="demoSwitch" data-act-change="demoSwitch"><option value="">（未登入）</option>
+    ${Remote.demoAccounts.map((a) => html`<option value="${a.email}" ${a.email === s?.user?.email ? "selected" : ""}>${a.orgName}（${KIND_NAMES[a.kind] ?? a.kind}）</option>`)}</select>`.s : "";
+  $id("account").innerHTML = demo + (s
     ? html`<p class="acct-org">${s.org.name}</p><p class="acct-user">${s.user?.name ?? "API 金鑰"} · ${ROLE_LABELS[s.role] ?? s.role}</p>
       <button type="button" class="btn sm" data-act="logout">登出</button>`.s
-    : html`<p class="acct-user">尚未登入：只看得到公開資料</p><a class="btn sm" href="#/login">登入</a>`.s;
+    : html`<p class="acct-user">尚未登入：只看得到公開資料</p><a class="btn sm" href="#/login">登入</a>`.s);
 }
 
 let renderSeq = 0;

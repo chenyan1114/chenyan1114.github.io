@@ -662,6 +662,7 @@ async function pageLogin() {
         <label for="lg-pw">密碼</label><input id="lg-pw" name="password" type="password" autocomplete="current-password" required>
         <button class="btn primary">登入</button>
       </form>
+      ${Remote.demoAccounts?.length ? html`<p class="note">本機示範：也可以直接用左側「目前身分」切換示範帳號，不用輸入密碼（經過 tunnel 或給了 --public-url 時伺服器會關閉這個功能）。</p>` : ""}
       <p class="note">只想查產品？<a href="#/scan">公開掃碼頁</a>與<a href="#/verify">驗證工具</a>不需要登入。</p>
     </div>`;
 }
@@ -669,6 +670,18 @@ FORMS.login = async (f, d) => {
   await Remote.login(d.email, d.password);
   toast(`歡迎，${Remote.session.user?.name ?? Remote.session.org.name}`);
   go(homeOf(me()));
+};
+// Local demo only: the server refuses this unless the request comes straight from localhost without a proxy
+ACTIONS.demoSwitch = async (el) => {
+  UI.access = null;
+  UI.secret = null;
+  if (el.value) {
+    await Remote.switchTo(el.value);
+    toast(`已切換為 ${Remote.session.org.name}（${ROLE_LABELS[Remote.session.role]}）`);
+  } else {
+    await Remote.logout();
+  }
+  go(homeOf(meOrNull()));
 };
 ACTIONS.logout = async () => { await Remote.logout(); UI.secret = null; toast("已登出"); go("#/login"); };
 

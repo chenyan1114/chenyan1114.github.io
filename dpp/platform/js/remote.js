@@ -8,6 +8,7 @@
 const Remote = {
   enabled: false,
   session: null, // { via, role, user, org } or null (not signed in)
+  demoAccounts: null, // accounts the server lets this browser switch to without a password (local demo only), or null
 
   async detect() {
     if (!/^https?:$/.test(location.protocol)) return false;
@@ -41,6 +42,18 @@ const Remote = {
 
   async login(email, password) {
     await this.api("POST", "/api/v1/session", { email, password });
+    await this.refresh();
+  },
+  /* The server decides: it answers only for a local server reached directly on this machine */
+  async loadDemoAccounts() {
+    try {
+      this.demoAccounts = (await this.api("GET", "/api/v1/demo/accounts")).accounts;
+    } catch {
+      this.demoAccounts = null;
+    }
+  },
+  async switchTo(email) {
+    await this.api("POST", "/api/v1/demo/switch", { email });
     await this.refresh();
   },
   async logout() {
@@ -111,6 +124,6 @@ const Remote = {
 
   async boot() {
     this.install();
-    await this.refresh();
+    await Promise.all([this.refresh(), this.loadDemoAccounts()]);
   },
 };
